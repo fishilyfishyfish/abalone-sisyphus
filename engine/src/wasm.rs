@@ -2,16 +2,29 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::ai::{self, Level};
+use crate::eval::DEFAULT_WEIGHTS;
 use crate::features;
 use crate::game::{Game, GameConfig};
 use crate::json;
 use crate::layouts::Layout;
-use crate::notation::parse_move;
+use crate::notation::{move_to_string, parse_move};
 use crate::rng::Rng;
+use crate::search::Searcher;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = Date)]
+    fn now() -> f64;
+}
+
+/// 브라우저 치환표 크기: 2^18칸 × 16바이트 = 4MB
+const TT_BITS: u32 = 18;
 
 #[wasm_bindgen]
 pub struct WasmGame {
     game: Game,
+    searcher: Searcher,
 }
 
 #[wasm_bindgen]
@@ -26,6 +39,7 @@ impl WasmGame {
         };
         WasmGame {
             game: Game::new(config),
+            searcher: Searcher::new(TT_BITS, DEFAULT_WEIGHTS, Box::new(now)),
         }
     }
 
@@ -66,13 +80,26 @@ impl WasmGame {
         self.game.undo().is_some()
     }
 
-    /// 합법수 중 무작위 하나의 표기 (없으면 빈 문자열). 두지는 않는다.
-    pub fn random_move(&self, seed: f64) -> String {
-        let moves = self.game.legal_moves();
-        if moves.is_empty() {
-            return String::new();
-        }
+    /// 현재 국면의 흑 관점 평가와 특징별 기여도.
+    pub fn evaluate(&self) -> String {
+        json::eval_json(&self.game.pos, &self.searcher.weights)
+    }
+
+    /// 난이도("random" | "easy" | "normal" | "hard")에 맞는 수를 고른다. 두지는 않는다.
+    /// 결과: {"move": 표기 또는 "", "search": 탐색 정보 또는 null}
+    pub fn ai_move(&mut self, level: &str, seed: f64) -> String {
+        let level = Level::parse(level).unwrap_or(Level::Random);
         let mut rng = Rng::new(seed.to_bits());
-        crate::notation::move_to_string(moves[rng.below(moves.len())])
+        match ai::choose(&self.game, level, &mut self.searcher, &mut rng) {
+            None => "{\"move\":\"\",\"search\":null}".to_string(),
+            Some((m, res)) => format!(
+                "{{\"move\":\"{}\",\"search\":{}}}",
+                move_to_string(m),
+                res.map_or("null".to_string(), |r| json::search_json(
+                    &self.game.pos,
+                    &r
+                ))
+            ),
+        }
     }
 }

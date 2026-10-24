@@ -59,6 +59,8 @@ function call(cmd, args = {}) {
 const ui = {
   state: null,
   features: null,
+  evaluation: null,
+  lastSearch: null, // { color, ply, search }
   singles: {}, // 정규 칸 번호 → 방향별 선택지. 움직일 수 있는 구슬을 빛내는 데만 쓴다
   selection: [], // 정규 칸 번호
   options: null, // 지금 선택에 대한 방향별 선택지
@@ -81,6 +83,7 @@ const isHumanTurn = () =>
 function setState(res) {
   ui.state = res.state;
   ui.features = res.features;
+  ui.evaluation = res.evaluation;
   ui.singles = res.singles || {};
   ui.selection = [];
   ui.options = null;
@@ -387,7 +390,7 @@ function renderPanel(st) {
     $(`count-${color}`).textContent = `${st.pushed[color]} / 6`;
     box.title = `${KO[color]}이 밀어낸 구슬 ${st.pushed[color]}개`;
     document.querySelector(`.score[data-color="${color}"]`).classList.toggle('active', st.outcome.status === 'ongoing' && st.side === color);
-    $(`tag-${color}`).textContent = ui.human === 'both' ? '' : ui.human === color ? '나' : '컴퓨터';
+    $(`tag-${color}`).textContent = ui.human === 'both' ? '' : ui.human === color ? '나' : `컴퓨터 · ${$('level').selectedOptions[0].textContent.split(' ')[0]}`;
   }
 
   const banner = $('banner');
@@ -445,13 +448,32 @@ const FEATURE_LABELS = {
   isolated: '고립된 구슬',
 };
 
+const signed = (v) => (v > 0 ? `+${v}` : String(v));
+
+/** 점수(흑 관점)를 사람이 읽는 말로. 1000점 = 구슬 하나. */
+function scoreText(v) {
+  if (Math.abs(v) >= 999000) return v > 0 ? '흑이 이기는 수순을 찾음' : '백이 이기는 수순을 찾음';
+  const who = v > 0 ? '흑' : '백';
+  return v === 0 ? '비슷함' : `${who} 유리 (구슬 ${(Math.abs(v) / 1000).toFixed(2)}개만큼)`;
+}
+
 function renderFeatures() {
-  const f = ui.features;
-  if (!f) return;
+  const f = ui.features, ev = ui.evaluation;
+  if (!f || !ev) return;
   const rows = Object.entries(FEATURE_LABELS)
-    .map(([k, label]) => `<tr><td>${label}</td><td>${f.black[k]}</td><td>${f.white[k]}</td></tr>`)
+    .map(([k, label]) => `<tr><td>${label}</td><td>${f.black[k]}</td><td>${f.white[k]}</td><td>${ev.weights[k]}</td><td>${signed(ev.contrib_black[k])}</td></tr>`)
     .join('');
-  $('features').innerHTML = `<tr><th>특징값</th><th>흑</th><th>백</th></tr>${rows}`;
+  $('features').innerHTML = `<tr><th>특징값</th><th>흑</th><th>백</th><th>가중치</th><th>기여(흑)</th></tr>${rows}`;
+  $('eval-line').textContent = `정적 평가 ${signed(ev.score_black)} — ${scoreText(ev.score_black)}. 기여 = 가중치 × (흑 − 백).`;
+  const ls = ui.lastSearch;
+  if (ls && ls.search) {
+    const s = ls.search;
+    $('search-line').textContent =
+      `${ui.state.history.length - ls.ply === 1 ? '방금' : `${ls.ply + 1}수째`} 컴퓨터(${KO[ls.color]}) 탐색: 깊이 ${s.depth}, ` +
+      `${s.nodes.toLocaleString()}노드, ${s.ms}ms, 점수 ${signed(s.score_black)}(흑 기준). 주 변화: ${s.pv.join(' ')}`;
+  } else {
+    $('search-line').textContent = '';
+  }
 }
 
 function moverOf(ply) {
@@ -660,8 +682,11 @@ function maybeAi() {
     if (token !== ui.aiToken) return;
     ui.busy = true;
     try {
-      const r = await call('random');
+      const color = ui.state.side;
+      const ply = ui.state.history.length;
+      const r = await call('ai', { level: $('level').value });
       if (token !== ui.aiToken || !r.move) return;
+      ui.lastSearch = { color, ply, search: r.search };
       const pushedBefore = ui.state.pushed;
       const res = await call('play', { text: r.move });
       if (token !== ui.aiToken) return;
@@ -698,6 +723,7 @@ async function undo() {
 async function newGame() {
   ui.aiToken++;
   ui.human = $('human').value;
+  ui.lastSearch = null;
   const limit = Math.max(0, Math.min(2000, parseInt($('limit').value, 10) || 0));
   $('limit').value = limit;
   ui.busy = true;
@@ -718,6 +744,7 @@ $('setup').addEventListener('submit', (e) => {
   newGame();
 });
 $('undo').addEventListener('click', undo);
+$('level').addEventListener('change', () => ui.state && renderPanel(ui.state)); // 다음 컴퓨터 수부터 적용
 $('clear').addEventListener('click', () => select([]));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') select([]);

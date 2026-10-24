@@ -25,6 +25,14 @@
           <option value="both">둘 다 (2인)</option>
         </select>
       </label>
+      <label>컴퓨터
+        <select id="level">
+          <option value="random">아주 쉬움 (아무 데나)</option>
+          <option value="easy" selected>쉬움</option>
+          <option value="normal">보통</option>
+          <option value="hard">어려움</option>
+        </select>
+      </label>
       <label>수 제한
         <input id="limit" type="number" min="0" max="2000" step="1" value="200" inputmode="numeric">
       </label>
@@ -78,9 +86,11 @@
       <h2>기보</h2>
       <ol id="moves" class="moves"></ol>
 
-      <details class="feat">
-        <summary>엔진 특징값 (현재 국면)</summary>
+      <details class="feat" id="engine">
+        <summary>엔진 판단</summary>
+        <p class="engine-line" id="eval-line"></p>
         <table id="features"></table>
+        <p class="engine-line" id="search-line"></p>
       </details>
     </aside>
   </main>

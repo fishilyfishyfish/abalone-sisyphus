@@ -125,6 +125,11 @@ impl Game {
         Some(m)
     }
 
+    /// 시작 국면부터 현재까지 각 국면의 해시 (마지막이 현재 국면).
+    pub fn hashes(&self) -> &[u64] {
+        &self.hashes
+    }
+
     pub fn repetition_count(&self) -> u32 {
         let h = self.pos.hash;
         self.hashes.iter().filter(|&&x| x == h).count() as u32

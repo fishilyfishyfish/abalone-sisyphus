@@ -81,23 +81,48 @@ pub fn center_distance_sum(m: u128) -> i32 {
     Bits(m).map(|s| CENTER_DIST[s as usize] as i32).sum()
 }
 
-pub fn side_features(pos: &Position, c: Color) -> SideFeatures {
+/// 밀어내기 대상 집합을 미리 구해 둔 상태에서 한쪽 특징값을 만든다.
+/// `my_targets` = c가 밀어낼 수 있는 상대 구슬, `their_targets` = 상대가 밀어낼 수 있는 c의 구슬.
+fn side_from(pos: &Position, c: Color, my_targets: u128, their_targets: u128) -> SideFeatures {
     let own = pos.stones[c.idx()];
-    let opp = pos.stones[c.other().idx()];
     SideFeatures {
         pushed_off: pos.pushed_off_by(c) as i32,
         center_distance: center_distance_sum(own),
         cohesion: cohesion_pairs(own),
         edge: (own & EDGE).count_ones() as i32,
-        endangered: push_off_targets(opp, own).count_ones() as i32,
-        attackable: push_off_targets(own, opp).count_ones() as i32,
+        endangered: their_targets.count_ones() as i32,
+        attackable: my_targets.count_ones() as i32,
         isolated: (own & !neighbor_mask(own)).count_ones() as i32,
     }
 }
 
+pub fn side_features(pos: &Position, c: Color) -> SideFeatures {
+    let own = pos.stones[c.idx()];
+    let opp = pos.stones[c.other().idx()];
+    side_from(
+        pos,
+        c,
+        push_off_targets(own, opp),
+        push_off_targets(opp, own),
+    )
+}
+
 pub fn compute(pos: &Position) -> Features {
+    let (b, w) = (pos.stones[0], pos.stones[1]);
+    let black_targets = push_off_targets(b, w);
+    let white_targets = push_off_targets(w, b);
     Features {
-        black: side_features(pos, Color::Black),
-        white: side_features(pos, Color::White),
+        black: side_from(pos, Color::Black, black_targets, white_targets),
+        white: side_from(pos, Color::White, white_targets, black_targets),
     }
+}
+
+/// c 기준 특징값 차이 (c의 값 − 상대 값). 평가함수와 기여도 계산의 입력.
+pub fn diff(pos: &Position, c: Color) -> [i32; 7] {
+    let f = compute(pos);
+    let (me, them) = match c {
+        Color::Black => (f.black.as_array(), f.white.as_array()),
+        Color::White => (f.white.as_array(), f.black.as_array()),
+    };
+    std::array::from_fn(|i| me[i] - them[i])
 }

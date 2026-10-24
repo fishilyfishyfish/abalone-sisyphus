@@ -393,6 +393,34 @@ pub fn push_off_targets(own: u128, opp: u128) -> u128 {
     targets
 }
 
+/// own 쪽 합법수 중 상대 구슬을 판 밖으로 밀어내는 수만 out에 추가한다 (정지 탐색용).
+pub fn gen_push_offs(own: u128, opp: u128, out: &mut Vec<Move>) {
+    for s in Bits(own) {
+        for d in 0..6u8 {
+            let dd = DIRS[d as usize];
+            // s가 줄의 맨 앞(head)
+            for n in 2..=3i32 {
+                if !(1..n).all(|i| has(own, s - i * dd)) {
+                    break;
+                }
+                if let Some(InlineResult::PushOff(_)) = inline_result(own, opp, s, dd, n) {
+                    let (axis, tail) = if d < 3 {
+                        (d, s - (n - 1) * dd)
+                    } else {
+                        (d - 3, s)
+                    };
+                    out.push(Move {
+                        tail: tail as u8,
+                        n: n as u8,
+                        axis,
+                        dir: d,
+                    });
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 국면
 
@@ -526,6 +554,21 @@ impl Position {
             self.pushed[me] -= 1;
         }
         self.hash = u.hash;
+    }
+
+    /// 인라인 2~3개 수의 밀기 결과 (그 외의 수는 None).
+    pub fn inline_kind(&self, m: Move) -> Option<InlineResult> {
+        if !m.is_inline() || m.n == 1 {
+            return None;
+        }
+        let (head, _) = m.head_and_rear();
+        inline_result(
+            self.own(),
+            self.opp(),
+            head,
+            DIRS[m.dir as usize],
+            m.n as i32,
+        )
     }
 
     /// 이 수가 상대 구슬을 판 밖으로 밀어내는지.

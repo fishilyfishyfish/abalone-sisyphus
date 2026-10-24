@@ -247,6 +247,7 @@ input[type="number"] { width: 6em; }
 .moves .off { color: var(--danger); }
 .moves:empty::before { content: "아직 둔 수가 없다"; color: var(--muted); font-family: system-ui, sans-serif; margin-left: -2.6em; }
 
+.engine-line { font-size: 0.85rem; color: var(--muted); margin: 6px 0; line-height: 1.5; word-break: keep-all; }
 .feat summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; min-height: 32px; }
 .feat table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 6px; }
 .feat th, .feat td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); }

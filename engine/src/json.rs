@@ -2,9 +2,11 @@
 
 use crate::assist::{self, Blocked, DirOption};
 use crate::board::*;
+use crate::eval::{self, Weights};
 use crate::features::{Features, SideFeatures, FEATURE_NAMES};
 use crate::game::{Game, Outcome};
 use crate::notation::move_to_string;
+use crate::search::SearchResult;
 
 pub fn color_name(c: Color) -> &'static str {
     match c {
@@ -174,4 +176,46 @@ pub fn group_options_json(g: &Game, cells: &[u8]) -> String {
         assist::group_options(&g.pos, &squares)
     };
     options_json(&g.pos, &opts)
+}
+
+/// 탐색 결과. score는 둘 차례 관점, score_black은 흑 관점.
+pub fn search_json(pos: &Position, r: &SearchResult) -> String {
+    let pv: Vec<String> =
+        r.pv.iter()
+            .map(|&m| format!("\"{}\"", move_to_string(m)))
+            .collect();
+    let black = if pos.side == Color::Black {
+        r.score
+    } else {
+        -r.score
+    };
+    format!(
+        "{{\"best\":\"{}\",\"depth\":{},\"score\":{},\"score_black\":{},\"nodes\":{},\"ms\":{:.0},\"pv\":[{}]}}",
+        r.best.map(move_to_string).unwrap_or_default(),
+        r.depth,
+        r.score,
+        black,
+        r.nodes,
+        r.elapsed_ms,
+        pv.join(",")
+    )
+}
+
+/// 현재 국면의 흑 관점 정적 평가와 특징별 기여도 (가중치 × 흑−백 차이).
+pub fn eval_json(pos: &Position, w: &Weights) -> String {
+    let c = eval::contributions(pos, Color::Black, w);
+    let field = |vals: &[i32]| -> String {
+        let v: Vec<String> = FEATURE_NAMES
+            .iter()
+            .zip(vals)
+            .map(|(n, v)| format!("\"{n}\":{v}"))
+            .collect();
+        format!("{{{}}}", v.join(","))
+    };
+    format!(
+        "{{\"score_black\":{},\"weights\":{},\"contrib_black\":{}}}",
+        c.iter().sum::<i32>(),
+        field(&w.0),
+        field(&c)
+    )
 }
