@@ -10,7 +10,6 @@ const DIRS = [[0, 1], [1, 1], [1, 0], [0, -1], [-1, -1], [-1, 0]];
 const ROWS = 'ABCDEFGHI';
 const AI_DELAY_MS = 600;
 const MOVE_MS = 280;
-const SWIPE_MIN = S * 0.35; // 이만큼 끌면 밀기로 본다 (SVG 단위)
 
 // 정규 칸 순서 (행 오름차순, 사선 오름차순) — 엔진의 CELLS와 같다
 const CELLS = [];
@@ -60,13 +59,15 @@ function call(cmd, args = {}) {
 const ui = {
   state: null,
   features: null,
-  singles: {}, // 정규 칸 번호 → 방향별 선택지 (구슬 하나를 눌렀을 때)
+  singles: {}, // 정규 칸 번호 → 방향별 선택지. 움직일 수 있는 구슬을 빛내는 데만 쓴다
   selection: [], // 정규 칸 번호
   options: null, // 지금 선택에 대한 방향별 선택지
   human: 'black',
   busy: false,
   aiToken: 0,
   gesture: null,
+  dragging: false,
+  wasOnlyThis: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -144,35 +145,69 @@ function buildBoard() {
     hit.setAttribute('aria-label', name);
   });
 
-  // 탭과 스와이프. 구슬을 누른 채 한 방향으로 끌면 그 방향으로 민다.
+  // 내 구슬에서 시작해 쓸면 지나간 줄(최대 3개)을 고른다. 쓸지 않고 떼면 탭.
   layers.hits.addEventListener('pointerdown', (e) => {
     const i = e.target.getAttribute('data-i');
     if (i === null) return;
-    ui.gesture = { i: Number(i), start: svgPoint(e), id: e.pointerId, swiped: false };
+    const start = Number(i);
+    const own = isHumanTurn() && !ui.busy && ui.state.board[start] === ownChar();
+    ui.gesture = { start, id: e.pointerId, own, cells: [start], moved: false };
+    if (own) {
+      ui.dragging = true;
+      ui.wasOnlyThis = ui.selection.length === 1 && ui.selection[0] === start;
+      showSelection([start]);
+    }
   });
   window.addEventListener('pointermove', (e) => {
     const g = ui.gesture;
-    if (!g || g.swiped || e.pointerId !== g.id) return;
-    const p = svgPoint(e);
-    const vx = p.x - g.start.x, vy = p.y - g.start.y;
-    if (Math.hypot(vx, vy) < SWIPE_MIN) return;
-    g.swiped = true;
-    let best = 0, bestDot = -Infinity;
-    for (let d = 0; d < 6; d++) {
-      const [ux, uy] = dirVec(d);
-      const dot = vx * ux + vy * uy;
-      if (dot > bestDot) [best, bestDot] = [d, dot];
-    }
-    onSwipe(g.i, best);
+    if (!g || !g.own || e.pointerId !== g.id) return;
+    const cell = cellAt(svgPoint(e));
+    if (cell === undefined) return;
+    if (cell !== g.start) g.moved = true;
+    const seg = segment(g.start, cell);
+    if (!seg || !seg.every((c) => ui.state.board[c] === ownChar())) return; // 줄이 아니면 직전 선택 유지
+    if (seg.join(',') === g.cells.join(',')) return;
+    g.cells = seg;
+    showSelection(seg);
   });
   const end = (e) => {
     const g = ui.gesture;
     if (!g || e.pointerId !== g.id) return;
     ui.gesture = null;
-    if (!g.swiped && e.type === 'pointerup') onCellTap(g.i);
+    ui.dragging = false;
+    if (e.type !== 'pointerup') {
+      if (g.own) select([]);
+      return;
+    }
+    if (!g.own) {
+      onCellTap(g.start);
+    } else if (!g.moved && g.cells.length === 1 && ui.wasOnlyThis) {
+      select([]); // 고른 구슬을 다시 누르면 해제
+    } else {
+      select(g.cells);
+    }
   };
   window.addEventListener('pointerup', end);
   window.addEventListener('pointercancel', end);
+}
+
+/** SVG 좌표에서 가장 가까운 칸 (반 칸 넘게 떨어지면 없음) */
+function cellAt(p) {
+  let best, bestD = S * 0.55;
+  CELLS.forEach(({ r, c }, i) => {
+    const [x, y] = px(r, c);
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bestD) [best, bestD] = [i, d];
+  });
+  return best;
+}
+
+/** 쓰는 중: 고른 줄만 보여주고 화살표는 손을 뗀 뒤에 */
+function showSelection(cells) {
+  ui.selection = cells;
+  ui.options = null;
+  renderSelection();
+  say(cells.length === 1 ? '그대로 떼면 이 구슬 하나, 옆 구슬로 쓸면 같이 골라져요.' : `${cells.length}개 골랐어요. 손을 떼면 화살표가 나와요.`);
 }
 
 function svgPoint(e) {
@@ -243,7 +278,7 @@ function renderSelection() {
   const myTurn = isHumanTurn();
 
   if (!ui.selection.length) {
-    if (myTurn) {
+    if (myTurn && !ui.dragging) {
       // 움직일 수 있는 내 구슬을 은은하게 표시
       for (const [k, opts] of Object.entries(ui.singles)) {
         if (!opts.some((o) => o.move)) continue;
@@ -272,8 +307,8 @@ function renderSelection() {
       el('circle', { r: 38 }, g);
       el('path', { d: 'M -14 -16 L 19 0 L -14 16 Z', transform: `rotate(${angle})` }, g);
     } else {
-      el('circle', { r: 21 }, g);
-      el('path', { d: 'M -7 -8 L 10 0 L -7 8 Z', transform: `rotate(${angle})` }, g);
+      el('circle', { r: 18 }, g);
+      el('path', { d: 'M -6 -7 L 9 0 L -6 7 Z', transform: `rotate(${angle})` }, g);
     }
     // 화살표를 누르고 있으면 같이 움직일 구슬을 미리 보여준다
     if (m) {
@@ -290,28 +325,32 @@ function renderSelection() {
 }
 
 /**
- * 화살표 위치. 인라인은 줄 맨 앞 구슬의 다음 칸(그 칸이 판 밖이면 바로 바깥),
- * 옆걸음은 도착 칸들 가운데. 그래서 고른 줄 옆의 내 구슬을 가리지 않는다.
+ * 화살표 위치. 큰 화살표: 인라인은 줄 맨 앞 구슬의 다음 칸(판 밖이면 바로 바깥), 옆걸음은 도착 칸 가운데.
+ * 회색 화살표: 고른 구슬 바로 옆 틈(반 칸). 어느 쪽도 이웃한 내 구슬의 탭을 가로채지 않는다.
  */
 function arrowAnchor(o, pts) {
   const [ux, uy] = dirVec(o.dir);
-  const own = ownChar();
-  const cells = o.move ? o.move.cells : ui.selection;
-  const inline = cells.length === 1 || cells.includes(step(cells[0], o.dir)) || cells.includes(step(cells[0], (o.dir + 3) % 6));
-  if (inline) {
-    let head = cells.find((i) => !cells.includes(step(i, o.dir)));
-    // 단일 선택에서 막힌 방향: 앞에 이어진 내 구슬을 건너뛴다
-    if (!o.move) {
-      while (step(head, o.dir) !== undefined && ui.state.board[step(head, o.dir)] === own) head = step(head, o.dir);
+  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  if (!o.move) {
+    const sel = ui.selection;
+    const along = sel.length === 1 || sel.includes(step(sel[0], o.dir)) || sel.includes(step(sel[0], (o.dir + 3) % 6));
+    let [bx, by] = [cx, cy];
+    if (along) {
+      const head = sel.find((i) => !sel.includes(step(i, o.dir)));
+      [bx, by] = px(CELLS[head].r, CELLS[head].c);
     }
+    return [bx + ux * S * 0.5, by + uy * S * 0.5];
+  }
+  const cells = o.move.cells;
+  if (o.move.inline) {
+    const head = cells.find((i) => !cells.includes(step(i, o.dir)));
     const t = step(head, o.dir);
     if (t !== undefined) return px(CELLS[t].r, CELLS[t].c);
     const [hx, hy] = px(CELLS[head].r, CELLS[head].c);
     return [hx + ux * S * 0.72, hy + uy * S * 0.72];
   }
-  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
-  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
-  return [cx + ux * S * 0.87, cy + uy * S * 0.87];
+  return [cx + ux * S, cy + uy * S];
 }
 
 function preview(m) {
@@ -435,7 +474,7 @@ function reasonText(b) {
         : `상대 구슬 ${b.theirs}개를 밀려면 내 구슬이 ${b.theirs + 1}개 필요해요. 지금은 ${b.mine}개예요.`;
     case 'own_behind': return '상대 구슬 바로 뒤에 내 구슬이 있으면 밀 수 없어요.';
     case 'broadside_blocked': return '옆으로 나란히 갈 때는 가는 칸이 모두 비어 있어야 해요. 옆으로는 밀 수 없어요.';
-    case 'own_in_way': return '앞에 내 구슬이 있어요. 그 구슬도 같이 골라 보세요.';
+    case 'own_in_way': return '앞에 내 구슬이 있어요. 그 구슬까지 같이 쓸어서 골라요.';
     default: return '그쪽으로는 못 가요.';
   }
 }
@@ -454,7 +493,7 @@ function idleMessage() {
   } else if (!isHumanTurn()) {
     say('컴퓨터가 생각하고 있어요…');
   } else if (!ui.selection.length) {
-    say(`움직일 내 구슬(${KO[st.side]})을 눌러요. 빛나는 구슬이 움직일 수 있어요.`);
+    say(`움직일 내 구슬(${KO[st.side]})을 손가락으로 쓱 쓸어서 골라요. 하나만 움직이려면 그 구슬을 눌러요.`);
   }
 }
 
@@ -464,16 +503,12 @@ function selectionMessage() {
   const ok = opts.filter((o) => o.move);
   if (!ok.length) {
     const reasons = [...new Set(opts.map((o) => o.blocked && o.blocked.code))];
-    const none = n === 1 ? '이 구슬은 지금 움직일 수 없어요. 다른 구슬을 골라 봐요.' : '고른 구슬들은 지금 같이 움직일 수 없어요. 회색 화살표를 누르면 이유를 알려 줘요.';
+    const none = `${n === 1 ? '이 구슬은' : '고른 구슬들은'} 지금 움직일 수 없어요. 회색 화살표를 누르면 이유를 알려 줘요.`;
     say(reasons.length === 1 && reasons[0] ? reasonText(opts[0].blocked) : none, 'warn');
     return;
   }
   const extra = ok.some((o) => o.move.push_off) ? ' 빨간 화살표는 상대 구슬을 판 밖으로 밀어내요!' : '';
-  if (n === 1) {
-    say(`큰 화살표를 누르거나 구슬을 그쪽으로 밀어요. 앞에 있는 구슬도 같이 가요.${extra}`);
-  } else {
-    say(`${n}개를 같이 골랐어요. 화살표를 눌러 같이 움직여요. 다시 누르면 빠져요.${extra}`);
-  }
+  say(`${n === 1 ? '구슬 하나를' : `구슬 ${n}개를`} 골랐어요. 큰 화살표를 눌러 움직여요.${extra}`);
 }
 
 // ---------------------------------------------------------------- 입력
@@ -495,25 +530,10 @@ function segment(a, b) {
   return null;
 }
 
-/** 가장 먼 두 칸을 잇는 줄이 모든 칸을 포함하고 전부 내 구슬이면 그 줄 */
-function lineThrough(cells) {
-  let best = null;
-  for (const a of cells) {
-    for (const b of cells) {
-      const seg = segment(a, b);
-      if (seg && (!best || seg.length > best.length)) best = seg;
-    }
-  }
-  if (!best || !cells.every((c) => best.includes(c))) return null;
-  return best.every((c) => ui.state.board[c] === ownChar()) ? best : null;
-}
-
 async function select(cells) {
   ui.selection = cells;
   if (cells.length === 0) {
     ui.options = null;
-  } else if (cells.length === 1) {
-    ui.options = ui.singles[cells[0]] || null;
   } else {
     ui.options = null;
     const want = cells.join(',');
@@ -526,20 +546,10 @@ async function select(cells) {
   else idleMessage();
 }
 
+/** 빈칸이나 상대 구슬을 눌렀을 때 (내 구슬은 쓸기 제스처가 처리) */
 function onCellTap(i) {
   if (!isHumanTurn() || ui.busy) return;
   const v = ui.state.board[i];
-  if (v === ownChar()) {
-    if (ui.selection.includes(i)) {
-      const rest = ui.selection.filter((x) => x !== i);
-      select(rest.length && lineThrough(rest)?.length === rest.length ? rest : []);
-    } else if (ui.selection.length) {
-      select(lineThrough([...ui.selection, i]) || [i]);
-    } else {
-      select([i]);
-    }
-    return;
-  }
   // 빈칸이나 상대 구슬: 고른 구슬이 갈 칸(또는 밀릴 상대 구슬)이면 그 수를 둔다
   if (ui.selection.length && ui.options) {
     const hit = ui.options.filter((o) => o.move && (destinations(o.move).includes(i) || pushedCells(o.move).includes(i)));
@@ -556,25 +566,6 @@ function onCellTap(i) {
     return;
   }
   select([]);
-}
-
-function onSwipe(i, dir) {
-  if (!isHumanTurn() || ui.busy) return;
-  if (ui.state.board[i] !== ownChar()) {
-    say(`내 구슬(${KO[ui.state.side]})을 밀어야 해요.`, 'warn');
-    return;
-  }
-  const o =
-    ui.selection.length > 1 && ui.selection.includes(i) && ui.options
-      ? ui.options[dir]
-      : (ui.singles[i] || [])[dir];
-  if (!o) return;
-  if (!o.move) {
-    ui.selection = [i];
-    ui.options = ui.singles[i] || null;
-    render();
-  }
-  choose(o);
 }
 
 function choose(o) {
