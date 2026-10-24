@@ -1,0 +1,21 @@
+[package]
+name = "abalone-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Abalone rules, move generation and feature extraction"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.test]
+opt-level = 2
