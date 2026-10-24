@@ -1,0 +1,208 @@
+//! 강도 측정: 두 설정을 무작위 오프닝 쌍으로 붙여 Elo 차이를 잰다.
+//! 같은 오프닝을 색만 바꿔 두 번 두므로 선후 유불리가 상쇄된다. 4스레드 병렬.
+//!
+//! 실행: cargo run --release --example strength -- <A> <B> [오프닝 쌍 수=20] [무작위 시작 수=4]
+//! 설정: random | easy | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use abalone_engine::ai::{self, Level};
+use abalone_engine::board::{Color, Move};
+use abalone_engine::eval::DEFAULT_WEIGHTS;
+use abalone_engine::game::{Game, GameConfig, Outcome};
+use abalone_engine::layouts::Layout;
+use abalone_engine::rng::Rng;
+use abalone_engine::search::{Limits, Searcher};
+
+#[derive(Clone, Copy, Debug)]
+enum Player {
+    Random,
+    Easy,
+    Depth(u32),
+    Time(f64),
+}
+
+fn parse(s: &str) -> Player {
+    match s {
+        "random" => Player::Random,
+        "easy" => Player::Easy,
+        _ if s.starts_with('d') => Player::Depth(s[1..].parse().expect("depth")),
+        _ if s.starts_with('t') => Player::Time(s[1..].parse().expect("ms")),
+        _ => panic!("unknown player {s}"),
+    }
+}
+
+fn pick(g: &Game, p: Player, s: &mut Searcher, rng: &mut Rng) -> Move {
+    match p {
+        Player::Random => ai::choose(g, Level::Random, s, rng).unwrap().0,
+        Player::Easy => ai::choose(g, Level::Easy, s, rng).unwrap().0,
+        Player::Depth(d) => s.search(g, Limits::depth(d)).best.unwrap(),
+        Player::Time(t) => s
+            .search(
+                g,
+                Limits {
+                    max_depth: 64,
+                    time_ms: t,
+                    exact_root: false,
+                },
+            )
+            .best
+            .unwrap(),
+    }
+}
+
+/// 무작위 시작 수순 (밀어내기는 피한다)
+fn opening(layout: Layout, plies: usize, rng: &mut Rng) -> Vec<Move> {
+    let mut g = Game::new(GameConfig {
+        layout,
+        ..GameConfig::default()
+    });
+    let mut line = Vec::new();
+    for _ in 0..plies {
+        let ms: Vec<Move> = g
+            .legal_moves()
+            .into_iter()
+            .filter(|&m| !g.pos.is_push_off(m))
+            .collect();
+        let m = ms[rng.below(ms.len())];
+        g.play_unchecked(m);
+        line.push(m);
+    }
+    line
+}
+
+/// Elo 차이 (점수율 s, 판 수 n). 전승·전패는 반 판을 빼서 하한만 낸다.
+pub fn elo(s: f64, n: f64) -> f64 {
+    let s = s.clamp(0.5 / n, 1.0 - 0.5 / n);
+    -400.0 * (1.0 / s - 1.0).log10()
+}
+
+struct GameResult {
+    idx: usize,
+    a_color: Color,
+    layout: Layout,
+    outcome: Outcome,
+    plies: usize,
+    pushed_a: u32,
+    pushed_b: u32,
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let a = parse(args.get(1).map_or("d3", |s| s));
+    let b = parse(args.get(2).map_or("d2", |s| s));
+    let pairs: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
+    let open_plies: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(4);
+    let layouts = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy];
+    let mut orng = Rng::new(777);
+    let openings: Vec<(Layout, Vec<Move>)> = (0..pairs)
+        .map(|i| {
+            let l = layouts[i % 3];
+            (l, opening(l, open_plies, &mut orng))
+        })
+        .collect();
+    let openings = Arc::new(openings);
+    let next = Arc::new(AtomicUsize::new(0));
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let threads: Vec<_> = (0..4)
+        .map(|t| {
+            let (openings, next, results) = (openings.clone(), next.clone(), results.clone());
+            std::thread::spawn(move || {
+                let mut sa = Searcher::with_std_clock(20, DEFAULT_WEIGHTS);
+                let mut sb = Searcher::with_std_clock(20, DEFAULT_WEIGHTS);
+                let mut rng = Rng::new(1000 + t);
+                loop {
+                    let job = next.fetch_add(1, Ordering::SeqCst);
+                    if job >= openings.len() * 2 {
+                        break;
+                    }
+                    let (layout, line) = &openings[job / 2];
+                    let a_color = if job % 2 == 0 {
+                        Color::Black
+                    } else {
+                        Color::White
+                    };
+                    let mut g = Game::new(GameConfig {
+                        layout: *layout,
+                        ..GameConfig::default()
+                    });
+                    for &m in line {
+                        g.play_unchecked(m);
+                    }
+                    sa.clear();
+                    sb.clear();
+                    while !g.is_over() {
+                        let m = if g.pos.side == a_color {
+                            pick(&g, a, &mut sa, &mut rng)
+                        } else {
+                            pick(&g, b, &mut sb, &mut rng)
+                        };
+                        g.play_unchecked(m);
+                    }
+                    results.lock().unwrap().push(GameResult {
+                        idx: job,
+                        a_color,
+                        layout: *layout,
+                        outcome: g.outcome(),
+                        plies: g.ply(),
+                        pushed_a: g.pos.pushed_off_by(a_color),
+                        pushed_b: g.pos.pushed_off_by(a_color.other()),
+                    });
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let mut res = Arc::try_unwrap(results).ok().unwrap().into_inner().unwrap();
+    res.sort_by_key(|r| r.idx);
+    let (mut w, mut d, mut l) = (0, 0, 0);
+    let (mut pa, mut pb, mut plies) = (0, 0, 0);
+    let mut reasons = std::collections::BTreeMap::new();
+    for r in &res {
+        let tag = match r.outcome {
+            Outcome::Win(c, why) => {
+                *reasons.entry(why.name()).or_insert(0) += 1;
+                if c == r.a_color {
+                    w += 1;
+                    format!("A ({})", why.name())
+                } else {
+                    l += 1;
+                    format!("B ({})", why.name())
+                }
+            }
+            Outcome::Draw(why) => {
+                *reasons.entry(why.name()).or_insert(0) += 1;
+                d += 1;
+                format!("draw ({})", why.name())
+            }
+            Outcome::Ongoing => unreachable!(),
+        };
+        pa += r.pushed_a;
+        pb += r.pushed_b;
+        plies += r.plies;
+        println!(
+            "game {:>3} {:<9} A={:?}: {tag:<20} {:>3} plies, pushed {}:{}",
+            r.idx,
+            r.layout.name(),
+            r.a_color,
+            r.plies,
+            r.pushed_a,
+            r.pushed_b
+        );
+    }
+    let n = res.len() as f64;
+    let s = (w as f64 + d as f64 / 2.0) / n;
+    let se = (s * (1.0 - s) / n).sqrt().max(0.5 / n);
+    println!(
+        "{a:?} vs {b:?}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}",
+        s * 100.0,
+        elo(s, n),
+        elo(s - 1.96 * se, n),
+        elo(s + 1.96 * se, n),
+        plies as f64 / n,
+        reasons
+    );
+}
