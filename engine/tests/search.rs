@@ -78,7 +78,15 @@ fn ref_negamax(pos: &Position, depth: i32, ply: i32, path: &mut Vec<u64>) -> i32
         return -(WIN - ply);
     }
     if ply > 0 && repeated(path, pos.hash) {
-        return 0;
+        let (me, them) = (
+            pos.pushed_off_by(pos.side),
+            pos.pushed_off_by(pos.side.other()),
+        );
+        return match me.cmp(&them) {
+            std::cmp::Ordering::Greater => WIN - ply,
+            std::cmp::Ordering::Less => -(WIN - ply),
+            std::cmp::Ordering::Equal => 0,
+        };
     }
     if depth <= 0 {
         return ref_q(pos, ply, QS_DEPTH);
@@ -286,6 +294,29 @@ fn move_limit_adjudication_inside_search() {
     assert!(!g.is_over());
     let mut s = searcher();
     let res = s.search(&g, Limits::depth(3));
+    assert_eq!(res.score, WIN - 1);
+}
+
+#[test]
+fn repetition_is_judged_by_pushed_count() {
+    // 흑이 하나 뒤진 상태에서 같은 국면으로 돌아가는 수순은 흑의 패배로 본다.
+    // 흑 A1, 백 I9만 남은 국면에서 둘이 왔다 갔다 하면 반복이 된다.
+    let g0 = Game::from_position(
+        pos(&["A1", "C3"], &["I9", "G7"], Color::Black).with_pushed(0, 1),
+        GameConfig {
+            move_limit: 0,
+            ..GameConfig::default()
+        },
+    );
+    let mut g = g0.clone();
+    for t in ["A1A2", "I9I8", "A2A1"] {
+        let m = parse_move(&g.pos, t).unwrap();
+        g.play(m);
+    }
+    // 백 차례: I8I9로 돌아가면 시작 국면 반복 → 백(앞선 쪽) 승리로 판정
+    let mut s = searcher();
+    let res = s.search(&g, Limits::depth(1));
+    assert_eq!(move_to_string(res.best.unwrap()), "I8I9");
     assert_eq!(res.score, WIN - 1);
 }
 

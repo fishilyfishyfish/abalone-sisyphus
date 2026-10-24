@@ -31,8 +31,12 @@ pub const WEIGHTS_V0: Weights = Weights([1000, -20, 10, -15, -75, 75, -30, 0, 0,
 /// center_distance는 밀려난 구슬을 거리 5로 치는 정의 기준이다.
 pub const WEIGHTS_V1: Weights = Weights([1000, -141, 106, 0, -77, 77, -33, 0, 0, 0, 0]);
 
+/// v2: 특징 11개(밀기 기회·3개 줄·덩어리 수·움직임 추가). v1 자기대국(깊이 3, 3000판,
+/// 조용한 국면 45만 개) 텍셀 튜닝, 부호 제약(뭉침·고립·움직임이 0으로 묶임).
+pub const WEIGHTS_V2: Weights = Weights([1000, -123, 0, -17, -28, 28, 0, 39, 55, -15, 0]);
+
 /// 엔진이 쓰는 가중치.
-pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V1;
+pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V2;
 
 /// 이름("v0", "default")이나 "w:" 뒤 쉼표 목록으로 가중치를 고른다. 측정·튜닝 도구용.
 /// 목록이 특징 수보다 짧으면 나머지는 0이다 (예: 예전 7개짜리 목록).
@@ -40,6 +44,7 @@ pub fn weights_by_name(name: &str) -> Option<Weights> {
     match name {
         "v0" => Some(WEIGHTS_V0),
         "v1" => Some(WEIGHTS_V1),
+        "v2" => Some(WEIGHTS_V2),
         "default" => Some(DEFAULT_WEIGHTS),
         _ => {
             let list = name.strip_prefix("w:")?;
@@ -59,7 +64,11 @@ pub fn weights_by_name(name: &str) -> Option<Weights> {
 
 /// 둘 차례 쪽 관점의 평가값 (승패 판정은 포함하지 않음).
 pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
-    score(&features::diff(pos, pos.side), w)
+    // mobility 가중치가 0이면 세지 않는다 (점수는 같고 더 빠르다)
+    score(
+        &features::diff_opts(pos, pos.side, w.0[features::MOBILITY] != 0),
+        w,
+    )
 }
 
 /// c 관점 평가값.

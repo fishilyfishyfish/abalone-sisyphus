@@ -347,7 +347,8 @@ impl Searcher {
             return s;
         }
         if self.is_repetition(pos.hash) {
-            return 0;
+            // 대국 규칙과 같이 반복은 밀어낸 수로 판정한다 (같으면 무승부)
+            return self.adjudicate(pos, ply);
         }
         if depth <= 0 || ply >= MAX_PLY - 1 {
             return self.qsearch(pos, ply, alpha, beta, QS_DEPTH);

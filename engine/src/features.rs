@@ -33,6 +33,8 @@ pub struct SideFeatures {
 }
 
 pub const NUM_FEATURES: usize = 11;
+/// mobility의 특징 번호
+pub const MOBILITY: usize = 10;
 
 pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "pushed_off",
@@ -96,6 +98,33 @@ pub fn cohesion_pairs(m: u128) -> i32 {
         + (m & shift(m, 2)).count_ones()) as i32
 }
 
+/// own 쪽이 지금 둔다고 가정할 때 상대 구슬을 미는 수의 개수와, 판 밖으로 밀어낼 수 있는 상대 구슬 집합.
+/// 미는 수는 (줄 맨 앞 구슬, 방향, 길이)로 하나씩 정해지므로 맨 앞 기준으로 한 번 돌면 된다.
+pub fn push_stats(own: u128, opp: u128) -> (i32, u128) {
+    let mut count = 0;
+    let mut targets = 0u128;
+    // 맨 앞 구슬 바로 앞이 상대 구슬이어야 밀기가 된다
+    for (d, &dd) in DIRS.iter().enumerate() {
+        let heads = own & shift(opp, (d + 3) % 6);
+        for s in Bits(heads) {
+            for n in 2..=3i32 {
+                if !(1..n).all(|i| has(own, s - i * dd)) {
+                    break;
+                }
+                match inline_result(own, opp, s, dd, n) {
+                    Some(InlineResult::Push(_)) => count += 1,
+                    Some(InlineResult::PushOff(k)) => {
+                        count += 1;
+                        targets |= bit(s + k as i32 * dd);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (count, targets)
+}
+
 /// 일렬로 3개 붙은 곳의 개수. 양의 3방향에서 "s, s−d, s−2d가 모두 내 구슬"인 s를 센다.
 pub fn triples(m: u128) -> i32 {
     (0..3)
@@ -133,12 +162,19 @@ pub fn center_distance_sum(m: u128) -> i32 {
     Bits(m).map(|s| CENTER_DIST[s as usize] as i32).sum()
 }
 
-/// 밀어내기 대상 집합을 미리 구해 둔 상태에서 한쪽 특징값을 만든다.
-/// `my_targets` = c가 밀어낼 수 있는 상대 구슬, `their_targets` = 상대가 밀어낼 수 있는 c의 구슬.
-fn side_from(pos: &Position, c: Color, my_targets: u128, their_targets: u128) -> SideFeatures {
+/// 한쪽 특징값. `pushes`/`my_targets` = c의 밀기 수와 밀어낼 수 있는 상대 구슬,
+/// `their_targets` = 상대가 밀어낼 수 있는 c의 구슬. `with_mobility`가 거짓이면 mobility는 0으로 둔다
+/// (가중치가 0일 때 평가 속도를 위해서. 표시·설명용 `compute`는 항상 센다).
+fn side_from(
+    pos: &Position,
+    c: Color,
+    pushes: i32,
+    my_targets: u128,
+    their_targets: u128,
+    with_mobility: bool,
+) -> SideFeatures {
     let own = pos.stones[c.idx()];
     let opp = pos.stones[c.other().idx()];
-    let (mobility, push_moves) = count_moves(own, opp);
     SideFeatures {
         pushed_off: pos.pushed_off_by(c) as i32,
         center_distance: center_distance_sum(own)
@@ -148,37 +184,45 @@ fn side_from(pos: &Position, c: Color, my_targets: u128, their_targets: u128) ->
         endangered: their_targets.count_ones() as i32,
         attackable: my_targets.count_ones() as i32,
         isolated: (own & !neighbor_mask(own)).count_ones() as i32,
-        push_moves,
+        push_moves: pushes,
         triples: triples(own),
         groups: groups(own),
-        mobility,
+        mobility: if with_mobility {
+            count_moves(own, opp).0
+        } else {
+            0
+        },
     }
 }
 
 pub fn side_features(pos: &Position, c: Color) -> SideFeatures {
-    let own = pos.stones[c.idx()];
-    let opp = pos.stones[c.other().idx()];
-    side_from(
-        pos,
-        c,
-        push_off_targets(own, opp),
-        push_off_targets(opp, own),
-    )
+    let f = compute(pos);
+    *f.side(c)
 }
 
 pub fn compute(pos: &Position) -> Features {
+    compute_opts(pos, true)
+}
+
+/// `with_mobility`가 거짓이면 두 쪽 mobility를 0으로 둔다 (평가함수 빠른 경로).
+pub fn compute_opts(pos: &Position, with_mobility: bool) -> Features {
     let (b, w) = (pos.stones[0], pos.stones[1]);
-    let black_targets = push_off_targets(b, w);
-    let white_targets = push_off_targets(w, b);
+    let (bp, bt) = push_stats(b, w);
+    let (wp, wt) = push_stats(w, b);
     Features {
-        black: side_from(pos, Color::Black, black_targets, white_targets),
-        white: side_from(pos, Color::White, white_targets, black_targets),
+        black: side_from(pos, Color::Black, bp, bt, wt, with_mobility),
+        white: side_from(pos, Color::White, wp, wt, bt, with_mobility),
     }
 }
 
 /// c 기준 특징값 차이 (c의 값 − 상대 값). 평가함수와 기여도 계산의 입력.
 pub fn diff(pos: &Position, c: Color) -> [i32; NUM_FEATURES] {
-    let f = compute(pos);
+    diff_opts(pos, c, true)
+}
+
+/// mobility 계산을 고를 수 있는 `diff` (`compute_opts` 참고).
+pub fn diff_opts(pos: &Position, c: Color, with_mobility: bool) -> [i32; NUM_FEATURES] {
+    let f = compute_opts(pos, with_mobility);
     let (me, them) = match c {
         Color::Black => (f.black.as_array(), f.white.as_array()),
         Color::White => (f.white.as_array(), f.black.as_array()),
