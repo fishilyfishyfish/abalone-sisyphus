@@ -76,6 +76,7 @@ cd web && python3 -m http.server 8000
 ```
 
 CI(`.github/workflows/pages.yml`): fmt → clippy → `cargo test --release` → WASM 빌드 → Pages 배포(main 푸시 때만).
+CI는 최신 stable Rust를 쓴다. 로컬도 `rustup update stable`로 맞춰야 새 clippy 규칙에 같이 걸린다(2026-10-24에 1.97 → 1.99 차이로 CI가 두 번 실패). 푸시한 뒤에는 CI 결과를 확인한다.
 wasm-bindgen 버전은 `engine/Cargo.toml`에 `=0.2.129`로 고정하고, CI는 Cargo.lock에서 읽어 같은 CLI를 설치한다.
 버전을 올릴 땐 Cargo.toml, 이 문서의 설치 명령을 같이 바꾼다.
 
