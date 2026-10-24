@@ -36,7 +36,7 @@
 
 ### 단계
 1. 규칙, 합법수 생성, 특징값 계산, 테스트 — **완료**
-2. 웹 UI(사람 vs 랜덤 AI), Pages 배포 — **완료** (Pages 활성화는 아래 "남은 문제" 참고)
+2. 웹 UI(사람 vs 랜덤 AI), Pages 배포 — **완료** (https://fishilyfishyfish.github.io/abalone-sisyphus/)
 3. 가중합 평가함수 + 알파베타(반복 심화, 조브리스트 치환표, 수 정렬)
 4. 버전 간 자동 대국으로 강도 측정, 자기대국 기반 가중치 튜닝
 5. 설명 층과 분석 페이지(기보 복기, 수마다 실수 등급과 설명),
@@ -159,9 +159,9 @@ wasm-bindgen 버전은 `engine/Cargo.toml`에 `=0.2.129`로 고정하고, CI는 
 
 - perft는 마지막 깊이에서 합법수 개수를 세는 방식(bulk counting).
 - `features::compute`(양쪽 7종 전부): 약 2.0 µs/회. 대부분 `push_off_targets` 비용.
-- 교차검증 테스트 3000판: release 약 76초.
+- 교차검증 테스트 3000판: release 약 76~78초. 60만 국면, 합법수 약 3,872만 개 비교, 밀어내기 4,216회, 특징값 비교 15만 국면.
 - WASM(브라우저 아님, Node): 무작위 대국 1판(200수, 매 수 상태·합법수·특징값 JSON 생성) 약 32ms.
 
 ## 남은 문제 / 다음 할 일
-- GitHub Pages 활성화(소스 = GitHub Actions): 2026-10-24 세션에서 `gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow`가 세션 프록시에서 403(이 API 경로 허용 안 됨)으로 막혀 하지 못했다. 저장소 Settings → Pages → Build and deployment → Source를 "GitHub Actions"로 바꾸면 워크플로가 배포한다. 그 전까지 deploy 잡은 실패한다.
+- GitHub Pages: 2026-10-24 세션에서 `gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow`는 세션 프록시가 403(이 API 경로 허용 안 됨)으로 막았다. 다만 첫 워크플로 실행의 deploy 잡이 성공했고 https://fishilyfishyfish.github.io/abalone-sisyphus/ 가 동작한다(Pages 설정은 API로 확인하지 못했다). 배포가 실패하면 Settings → Pages → Source가 "GitHub Actions"인지 확인.
 - 3단계: 평가함수(특징값 가중합)와 알파베타. `push_off_targets`가 평가 비용 대부분이라 탐색에서는 증분 계산이나 캐시를 고려.
