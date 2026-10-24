@@ -215,7 +215,8 @@ impl Naive {
         };
         [
             self.pushed[side as usize] as i32,
-            own.iter().map(|&c| Naive::dist(c)).sum(),
+            own.iter().map(|&c| Naive::dist(c)).sum::<i32>()
+                + 5 * self.pushed[(3 - side) as usize] as i32,
             pairs,
             own.iter().filter(|&&c| Naive::dist(c) == 4).count() as i32,
             targets(3 - side),

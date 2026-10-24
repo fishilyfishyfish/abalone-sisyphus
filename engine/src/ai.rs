@@ -17,8 +17,9 @@ pub enum Level {
     Hard,
 }
 
-/// 쉬움 난이도에서 "그럭저럭 괜찮은 수"로 보는 점수 폭. 구슬 하나(1000)보다 훨씬 작다.
-pub const EASY_MARGIN: i32 = 150;
+/// 쉬움 난이도에서 "그럭저럭 괜찮은 수"로 보는 점수 폭. v1 가중치에서 이전 쉬움(v0, 폭 150)과 세기가 비슷하다.
+/// 800 이상이면 구슬을 공짜로 내주는 수까지 골라서 급격히 약해진다.
+pub const EASY_MARGIN: i32 = 500;
 
 impl Level {
     pub fn parse(s: &str) -> Option<Level> {
@@ -87,4 +88,27 @@ pub fn choose(
             Some((res.best?, Some(res)))
         }
     }
+}
+
+/// 깊이 1(+정지 탐색)의 정확한 점수에서 최선보다 margin 이내인 수 중 무작위.
+pub fn choose_easy(
+    game: &Game,
+    searcher: &mut Searcher,
+    rng: &mut Rng,
+    margin: i32,
+) -> Option<(Move, Option<SearchResult>)> {
+    let res = searcher.search(game, Level::Easy.limits());
+    let best = res.score;
+    let ok: Vec<Move> = res
+        .root_scores
+        .iter()
+        .filter(|(_, s)| *s >= best - margin)
+        .map(|(m, _)| *m)
+        .collect();
+    let m = if ok.is_empty() {
+        res.best?
+    } else {
+        ok[rng.below(ok.len())]
+    };
+    Some((m, Some(res)))
 }

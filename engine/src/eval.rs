@@ -29,10 +29,11 @@ pub struct Weights(pub [i32; NUM_FEATURES]);
 pub const WEIGHTS_V0: Weights = Weights([1000, -20, 10, -15, -75, 75, -30]);
 
 /// v1: v0 자기대국(깊이 3, 3000판, 조용한 국면 33.6만 개) 텍셀 튜닝, 부호 제약(가장자리 0으로 묶임).
-pub const WEIGHTS_V1: Weights = Weights([1000, -83, 62, 0, -45, 45, -19]);
+/// center_distance는 밀려난 구슬을 거리 5로 치는 정의 기준이다.
+pub const WEIGHTS_V1: Weights = Weights([1000, -141, 106, 0, -77, 77, -33]);
 
 /// 엔진이 쓰는 가중치.
-pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V0;
+pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V1;
 
 /// 이름("v0", "default")이나 "w:" 뒤 쉼표 목록(7개)으로 가중치를 고른다. 측정·튜닝 도구용.
 pub fn weights_by_name(name: &str) -> Option<Weights> {

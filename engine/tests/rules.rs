@@ -288,6 +288,22 @@ fn features_basic() {
 }
 
 #[test]
+fn pushed_off_marbles_count_as_off_board_distance() {
+    // 백이 흑 구슬 2개를 밀어낸 상태: 흑 거리 합 = 판 위 구슬 + 5 × 2
+    let p = pos(&["E5", "A1"], &["E8"], Color::Black).with_pushed(0, 2);
+    assert_eq!(features::compute(&p).black.center_distance, 4 + 5 * 2);
+    // 가장자리 구슬 하나를 밀려나면 거리 합은 4 → 5로 늘어난다
+    let mut g = Game::from_position(
+        pos(&["E9", "A1"], &["E7", "E8", "I5"], Color::White),
+        GameConfig::default(),
+    );
+    let before = features::compute(&g.pos).black.center_distance;
+    let m = parse_move(&g.pos, "E7E8").unwrap();
+    assert!(g.play(m));
+    assert_eq!(features::compute(&g.pos).black.center_distance, before + 1);
+}
+
+#[test]
 fn layout_feature_symmetry() {
     // 세 시작 배치는 흑백 대칭이라 특징값이 같아야 한다
     for l in [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy] {

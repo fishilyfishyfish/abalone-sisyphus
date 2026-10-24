@@ -238,6 +238,8 @@ fn finds_winning_push_off() {
 #[test]
 fn defends_threatened_marble() {
     // 백 E7 E8이 흑 E9를 밀어낼 수 있다. 흑 차례면 피해야 한다.
+    // 튜닝된 가중치(v1)는 가장자리 구슬을 밀어낸 쪽 구슬도 가장자리로 나가 약해진다고 보기 때문에
+    // 깊이 3~4에서는 지키는 수와 다른 수의 차이를 작게 본다. 깊이 5에서는 지킨다.
     let g = Game::from_position(
         pos(
             &["E9", "A1", "A2", "A3"],
@@ -250,7 +252,7 @@ fn defends_threatened_marble() {
         },
     );
     let mut s = searcher();
-    let res = s.search(&g, Limits::depth(3));
+    let res = s.search(&g, Limits::depth(5));
     let mut p = g.pos;
     p.make_move(res.best.unwrap());
     // 둔 뒤 백이 바로 밀어낼 수 있는 흑 구슬이 없다

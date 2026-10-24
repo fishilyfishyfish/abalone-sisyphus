@@ -9,7 +9,8 @@ use crate::board::*;
 pub struct SideFeatures {
     /// 밀어낸 상대 구슬 수
     pub pushed_off: i32,
-    /// 내 구슬들의 중앙(E5)까지 육각 거리 합 (작을수록 중앙)
+    /// 내 구슬들의 중앙(E5)까지 육각 거리 합 (작을수록 중앙).
+    /// 밀려난 구슬은 거리 `OFF_BOARD_DISTANCE`(판 밖)로 쳐서 더한다
     pub center_distance: i32,
     /// 같은 편끼리 맞닿은 쌍 수
     pub cohesion: i32,
@@ -77,6 +78,10 @@ pub fn cohesion_pairs(m: u128) -> i32 {
         + (m & shift(m, 2)).count_ones()) as i32
 }
 
+/// 밀려난 구슬의 중앙 거리. 판 위 최대 거리(4)보다 한 칸 멀다.
+/// 이 값 없이 판 위 구슬만 더하면 가장자리 구슬을 잃을 때 거리 합이 줄어 "좋아진" 것처럼 보인다.
+pub const OFF_BOARD_DISTANCE: i32 = 5;
+
 pub fn center_distance_sum(m: u128) -> i32 {
     Bits(m).map(|s| CENTER_DIST[s as usize] as i32).sum()
 }
@@ -87,7 +92,8 @@ fn side_from(pos: &Position, c: Color, my_targets: u128, their_targets: u128) ->
     let own = pos.stones[c.idx()];
     SideFeatures {
         pushed_off: pos.pushed_off_by(c) as i32,
-        center_distance: center_distance_sum(own),
+        center_distance: center_distance_sum(own)
+            + OFF_BOARD_DISTANCE * pos.pushed_off_by(c.other()) as i32,
         cohesion: cohesion_pairs(own),
         edge: (own & EDGE).count_ones() as i32,
         endangered: their_targets.count_ones() as i32,

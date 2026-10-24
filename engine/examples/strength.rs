@@ -2,7 +2,7 @@
 //! 같은 오프닝을 색만 바꿔 두 번 두므로 선후 유불리가 상쇄된다. 4스레드 병렬.
 //!
 //! 실행: cargo run --release --example strength -- <A> <B> [오프닝 쌍 수=20] [무작위 시작 수=4]
-//! 설정: random | easy | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
+//! 설정: random | easy | easy<점수 폭> (예 easy600) | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
 //! 뒤에 @가중치를 붙이면 그 가중치로 둔다: d3@v0, t500@w:1000,-20,10,-15,-75,75,-30
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,6 +20,7 @@ use abalone_engine::search::{Limits, Searcher};
 enum Player {
     Random,
     Easy,
+    EasyMargin(i32),
     Depth(u32),
     Time(f64),
 }
@@ -33,6 +34,7 @@ fn parse(s: &str) -> Player {
     match s {
         "random" => Player::Random,
         "easy" => Player::Easy,
+        _ if s.starts_with("easy") => Player::EasyMargin(s[4..].parse().expect("margin")),
         _ if s.starts_with('d') => Player::Depth(s[1..].parse().expect("depth")),
         _ if s.starts_with('t') => Player::Time(s[1..].parse().expect("ms")),
         _ => panic!("unknown player {s}"),
@@ -43,6 +45,7 @@ fn pick(g: &Game, p: Player, s: &mut Searcher, rng: &mut Rng) -> Move {
     match p {
         Player::Random => ai::choose(g, Level::Random, s, rng).unwrap().0,
         Player::Easy => ai::choose(g, Level::Easy, s, rng).unwrap().0,
+        Player::EasyMargin(m) => ai::choose_easy(g, s, rng, m).unwrap().0,
         Player::Depth(d) => s.search(g, Limits::depth(d)).best.unwrap(),
         Player::Time(t) => s
             .search(
