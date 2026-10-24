@@ -140,7 +140,7 @@ pub fn groups(m: u128) -> i32 {
     let mut rest = m;
     let mut n = 0;
     while rest != 0 {
-        let mut comp = rest & rest.wrapping_neg();
+        let mut comp = 1u128 << rest.trailing_zeros();
         loop {
             let next = (comp | neighbor_mask(comp)) & m;
             if next == comp {
