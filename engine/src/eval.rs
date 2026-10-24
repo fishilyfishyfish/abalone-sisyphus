@@ -28,6 +28,9 @@ pub struct Weights(pub [i32; NUM_FEATURES]);
 /// - isolated −30: 고립 구슬 하나
 pub const WEIGHTS_V0: Weights = Weights([1000, -20, 10, -15, -75, 75, -30]);
 
+/// v1: v0 자기대국(깊이 3, 3000판, 조용한 국면 33.6만 개) 텍셀 튜닝, 부호 제약(가장자리 0으로 묶임).
+pub const WEIGHTS_V1: Weights = Weights([1000, -83, 62, 0, -45, 45, -19]);
+
 /// 엔진이 쓰는 가중치.
 pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V0;
 
@@ -35,6 +38,7 @@ pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V0;
 pub fn weights_by_name(name: &str) -> Option<Weights> {
     match name {
         "v0" => Some(WEIGHTS_V0),
+        "v1" => Some(WEIGHTS_V1),
         "default" => Some(DEFAULT_WEIGHTS),
         _ => {
             let list = name.strip_prefix("w:")?;
