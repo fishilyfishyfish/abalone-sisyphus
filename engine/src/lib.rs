@@ -1,5 +1,6 @@
 //! 아발론 엔진: 규칙, 합법수 생성, 특징값.
 
+pub mod assist;
 pub mod board;
 pub mod features;
 pub mod game;

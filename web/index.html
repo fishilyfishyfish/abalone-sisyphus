@@ -35,7 +35,7 @@
   <main class="layout">
     <section class="board-wrap" aria-label="게임 판">
       <svg id="board" viewBox="0 0 100 100" role="img" aria-label="아발론 판"></svg>
-      <p id="hint" class="hint" aria-live="polite"></p>
+      <p id="msg" class="msg" aria-live="polite"></p>
     </section>
 
     <aside class="panel">
@@ -44,23 +44,37 @@
       <div class="scores">
         <div class="score" data-color="black">
           <span class="who"><i class="dot black"></i>흑<span class="tag" id="tag-black"></span></span>
+          <span class="pushed-label">밀어낸 구슬 <b id="count-black"></b></span>
           <span class="pushed" id="pushed-black" aria-label="흑이 밀어낸 구슬"></span>
         </div>
         <div class="score" data-color="white">
           <span class="who"><i class="dot white"></i>백<span class="tag" id="tag-white"></span></span>
+          <span class="pushed-label">밀어낸 구슬 <b id="count-white"></b></span>
           <span class="pushed" id="pushed-white" aria-label="백이 밀어낸 구슬"></span>
         </div>
       </div>
 
       <div class="status">
-        <span id="turn"></span>
+        <span id="turn" class="turn"></span>
         <span id="ply" class="muted"></span>
       </div>
 
       <div class="actions">
-        <button id="undo" class="btn">무르기</button>
+        <button id="undo" class="btn">↶ 무르기</button>
         <button id="clear" class="btn ghost">선택 해제</button>
       </div>
+
+      <details class="help">
+        <summary>어떻게 해요?</summary>
+        <ul>
+          <li>내 구슬을 누르면 갈 수 있는 쪽에 큰 화살표가 나와요. 화살표를 누르면 움직여요.</li>
+          <li>구슬을 손가락으로 그쪽으로 쓱 밀어도 돼요.</li>
+          <li>앞에 줄지어 있는 내 구슬도 같이 가요. 3개까지 한 번에 움직일 수 있어요.</li>
+          <li>상대 구슬보다 내 구슬이 더 많으면 밀 수 있어요. 판 밖으로 6개 밀어내면 이겨요.</li>
+          <li>작은 회색 화살표를 누르면 왜 못 가는지 알려 줘요.</li>
+          <li>여러 개를 옆으로 나란히 옮기려면 나란한 구슬을 이어서 눌러요.</li>
+        </ul>
+      </details>
 
       <h2>기보</h2>
       <ol id="moves" class="moves"></ol>

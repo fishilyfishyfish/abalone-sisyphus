@@ -1,5 +1,6 @@
 //! 웹에 넘길 JSON 직렬화 (의존성 없이 손으로 작성).
 
+use crate::assist::{self, Blocked, DirOption};
 use crate::board::*;
 use crate::features::{Features, SideFeatures, FEATURE_NAMES};
 use crate::game::{Game, Outcome};
@@ -114,4 +115,63 @@ pub fn features_json(f: &Features) -> String {
         side_json(&f.black),
         side_json(&f.white)
     )
+}
+
+fn blocked_json(b: Blocked) -> String {
+    match b {
+        Blocked::NotStronger { mine, theirs } => format!(
+            "{{\"code\":\"{}\",\"mine\":{mine},\"theirs\":{theirs}}}",
+            b.code()
+        ),
+        _ => format!("{{\"code\":\"{}\"}}", b.code()),
+    }
+}
+
+pub fn options_json(pos: &Position, opts: &[DirOption; 6]) -> String {
+    let v: Vec<String> = opts
+        .iter()
+        .map(|o| {
+            format!(
+                "{{\"dir\":{},\"move\":{},\"blocked\":{}}}",
+                o.dir,
+                o.mv.map_or("null".to_string(), |m| move_json(pos, m)),
+                o.blocked.map_or("null".to_string(), blocked_json)
+            )
+        })
+        .collect();
+    format!("[{}]", v.join(","))
+}
+
+/// 둘 차례인 쪽 구슬마다 방향별 선택지. 키는 정규 칸 번호. 종국이면 빈 객체.
+pub fn single_options_json(g: &Game) -> String {
+    if g.is_over() {
+        return "{}".to_string();
+    }
+    let v: Vec<String> = Bits(g.pos.own())
+        .map(|s| {
+            format!(
+                "\"{}\":{}",
+                CELL_INDEX[s as usize],
+                options_json(&g.pos, &assist::single_options(&g.pos, s))
+            )
+        })
+        .collect();
+    format!("{{{}}}", v.join(","))
+}
+
+/// 고른 칸들(정규 번호)을 그대로 움직이는 방향별 선택지.
+pub fn group_options_json(g: &Game, cells: &[u8]) -> String {
+    let squares: Vec<i32> = cells
+        .iter()
+        .filter(|&&c| (c as usize) < NUM_CELLS)
+        .map(|&c| CELLS[c as usize] as i32)
+        .collect();
+    let opts = if g.is_over() {
+        let mut o = assist::group_options(&g.pos, &[]);
+        o.iter_mut().for_each(|x| x.mv = None);
+        o
+    } else {
+        assist::group_options(&g.pos, &squares)
+    };
+    options_json(&g.pos, &opts)
 }

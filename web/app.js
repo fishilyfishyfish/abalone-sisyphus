@@ -1,4 +1,5 @@
-// 아발론 웹 UI. 규칙 판단은 전부 워커 안의 엔진이 하고, 여기서는 그리기와 입력만 다룬다.
+// 아발론 웹 UI. 규칙 판단(둘 수 있는 수, 못 두는 이유)은 전부 워커 안의 엔진이 하고,
+// 여기서는 그리기와 입력만 다룬다.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const S = 100; // 칸 간격
@@ -7,7 +8,9 @@ const R_MARBLE = 42;
 // 엔진과 같은 방향 순서: E, NE, NW, W, SW, SE  (dr, dc)
 const DIRS = [[0, 1], [1, 1], [1, 0], [0, -1], [-1, -1], [-1, 0]];
 const ROWS = 'ABCDEFGHI';
-const AI_DELAY_MS = 450;
+const AI_DELAY_MS = 600;
+const MOVE_MS = 280;
+const SWIPE_MIN = S * 0.35; // 이만큼 끌면 밀기로 본다 (SVG 단위)
 
 // 정규 칸 순서 (행 오름차순, 사선 오름차순) — 엔진의 CELLS와 같다
 const CELLS = [];
@@ -22,6 +25,13 @@ for (let r = 0; r < 9; r++) {
 }
 const cellIndex = (r, c) => (Math.abs(r - c) <= 4 && r >= 0 && r < 9 && c >= 0 && c < 9 ? CELL_AT.get(r * 9 + c) : undefined);
 const px = (r, c) => [(c - r / 2) * S, (8 - r) * H];
+const dirVec = (d) => {
+  const [dr, dc] = DIRS[d];
+  const x = (dc - dr / 2) * S, y = -dr * H;
+  const l = Math.hypot(x, y);
+  return [x / l, y / l];
+};
+const step = (i, d) => cellIndex(CELLS[i].r + DIRS[d][0], CELLS[i].c + DIRS[d][1]);
 
 // ---------------------------------------------------------------- 워커
 
@@ -36,7 +46,7 @@ worker.onmessage = (e) => {
   if (res.error) p.reject(new Error(res.error));
   else p.resolve(res);
 };
-worker.onerror = (e) => showHint(`엔진을 불러오지 못했다: ${e.message || e}`);
+worker.onerror = (e) => say(`엔진을 불러오지 못했어요: ${e.message || e}`, 'warn');
 function call(cmd, args = {}) {
   const id = ++reqId;
   return new Promise((resolve, reject) => {
@@ -49,37 +59,36 @@ function call(cmd, args = {}) {
 
 const ui = {
   state: null,
-  legal: [],
   features: null,
-  legalByKey: new Map(),
+  singles: {}, // 정규 칸 번호 → 방향별 선택지 (구슬 하나를 눌렀을 때)
   selection: [], // 정규 칸 번호
+  options: null, // 지금 선택에 대한 방향별 선택지
   human: 'black',
   busy: false,
   aiToken: 0,
+  gesture: null,
 };
 
 const $ = (id) => document.getElementById(id);
 const board = $('board');
-
-function moveKey(cells, dir) {
-  return [...cells].sort((a, b) => a - b).join(',') + ':' + dir;
-}
-
-function apply(res) {
-  ui.state = res.state;
-  ui.legal = res.legal;
-  ui.features = res.features;
-  ui.legalByKey = new Map(res.legal.map((m) => [moveKey(m.cells, m.dir), m]));
-  ui.selection = [];
-  render();
-}
+const KO = { black: '흑', white: '백' };
+const ownChar = () => (ui.state.side === 'black' ? 'b' : 'w');
 
 const isHumanTurn = () =>
   ui.state && ui.state.outcome.status === 'ongoing' && (ui.human === 'both' || ui.state.side === ui.human);
 
+function setState(res) {
+  ui.state = res.state;
+  ui.features = res.features;
+  ui.singles = res.singles || {};
+  ui.selection = [];
+  ui.options = null;
+}
+
 // ---------------------------------------------------------------- 판 그리기 (고정 요소)
 
 const layers = {};
+let marbleEls = new Map(); // 정규 칸 번호 → circle
 function el(tag, attrs = {}, parent) {
   const e = document.createElementNS(SVG_NS, tag);
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
@@ -114,17 +123,16 @@ function buildBoard() {
   // 좌표 표시: 행 글자는 각 행 왼쪽, 사선 숫자는 아래·오른쪽 아래 가장자리 바깥
   const labels = el('g', {}, board);
   for (let r = 0; r < 9; r++) {
-    const c0 = Math.max(0, r - 4);
-    const [x, y] = px(r, c0 - 1.32);
+    const [x, y] = px(r, Math.max(0, r - 4) - 1.32);
     el('text', { x, y, class: 'label' }, labels).textContent = ROWS[r];
   }
   for (let c = 0; c < 9; c++) {
-    const r0 = Math.max(0, c - 4);
-    const [x, y] = px(r0 - 1.3, c);
+    const [x, y] = px(Math.max(0, c - 4) - 1.3, c);
     el('text', { x, y, class: 'label' }, labels).textContent = String(c + 1);
   }
 
   layers.marks = el('g', {}, board);
+  layers.glow = el('g', {}, board);
   layers.marbles = el('g', {}, board);
   layers.sel = el('g', {}, board);
   layers.hits = el('g', {}, board);
@@ -135,10 +143,43 @@ function buildBoard() {
     const hit = el('circle', { cx: x, cy: y, r: S / 2, class: 'hit', 'data-i': i }, layers.hits);
     hit.setAttribute('aria-label', name);
   });
-  layers.hits.addEventListener('click', (e) => {
+
+  // 탭과 스와이프. 구슬을 누른 채 한 방향으로 끌면 그 방향으로 민다.
+  layers.hits.addEventListener('pointerdown', (e) => {
     const i = e.target.getAttribute('data-i');
-    if (i !== null) onCellTap(Number(i));
+    if (i === null) return;
+    ui.gesture = { i: Number(i), start: svgPoint(e), id: e.pointerId, swiped: false };
   });
+  window.addEventListener('pointermove', (e) => {
+    const g = ui.gesture;
+    if (!g || g.swiped || e.pointerId !== g.id) return;
+    const p = svgPoint(e);
+    const vx = p.x - g.start.x, vy = p.y - g.start.y;
+    if (Math.hypot(vx, vy) < SWIPE_MIN) return;
+    g.swiped = true;
+    let best = 0, bestDot = -Infinity;
+    for (let d = 0; d < 6; d++) {
+      const [ux, uy] = dirVec(d);
+      const dot = vx * ux + vy * uy;
+      if (dot > bestDot) [best, bestDot] = [d, dot];
+    }
+    onSwipe(g.i, best);
+  });
+  const end = (e) => {
+    const g = ui.gesture;
+    if (!g || e.pointerId !== g.id) return;
+    ui.gesture = null;
+    if (!g.swiped && e.type === 'pointerup') onCellTap(g.i);
+  };
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+}
+
+function svgPoint(e) {
+  const pt = board.createSVGPoint();
+  pt.x = e.clientX;
+  pt.y = e.clientY;
+  return pt.matrixTransform(board.getScreenCTM().inverse());
 }
 
 // ---------------------------------------------------------------- 렌더
@@ -146,114 +187,153 @@ function buildBoard() {
 function render() {
   const st = ui.state;
   if (!st) return;
-  renderMarbles(st);
+  renderMarbles(st.board);
+  renderLast(st);
   renderSelection();
   renderPanel(st);
 }
 
-function renderMarbles(st) {
+function renderMarbles(boardStr) {
   layers.marbles.replaceChildren();
-  layers.marks.replaceChildren();
+  marbleEls = new Map();
   for (let i = 0; i < CELLS.length; i++) {
-    const v = st.board[i];
+    const v = boardStr[i];
     if (v === '.') continue;
     const [x, y] = px(CELLS[i].r, CELLS[i].c);
-    el('circle', { cx: x, cy: y, r: R_MARBLE, class: `marble ${v === 'b' ? 'black' : 'white'}` }, layers.marbles);
+    const m = el('circle', { cx: x, cy: y, r: R_MARBLE, class: `marble ${v === 'b' ? 'black' : 'white'}` }, layers.marbles);
+    marbleEls.set(i, m);
   }
-  if (st.last) {
-    const [dr, dc] = DIRS[st.last.dir];
-    for (const i of st.last.cells) {
-      const { r, c } = CELLS[i];
-      const [x, y] = px(r, c);
-      const [tx, ty] = px(r + dr, c + dc);
-      if (st.board[i] === '.') el('circle', { cx: x, cy: y, r: R_MARBLE * 0.55, class: 'last-from' }, layers.marks);
+}
+
+function renderLast(st) {
+  layers.marks.replaceChildren();
+  if (!st.last) return;
+  for (const i of st.last.cells) {
+    const t = step(i, st.last.dir);
+    if (st.board[i] === '.') {
+      const [x, y] = px(CELLS[i].r, CELLS[i].c);
+      el('circle', { cx: x, cy: y, r: R_MARBLE * 0.55, class: 'last-from' }, layers.marks);
+    }
+    if (t !== undefined) {
+      const [tx, ty] = px(CELLS[t].r, CELLS[t].c);
       el('circle', { cx: tx, cy: ty, r: R_MARBLE + 3, class: 'last-to' }, layers.marks);
     }
   }
 }
 
-/** 선택된 줄에서 둘 수 있는 수 (방향별) */
-function selectionMoves() {
-  if (!ui.selection.length) return [];
-  const out = [];
-  for (let d = 0; d < 6; d++) {
-    const m = ui.legalByKey.get(moveKey(ui.selection, d));
-    if (m) out.push(m);
-  }
-  return out;
-}
-
 /** 수를 두면 내 구슬이 새로 차지하는 칸 */
 function destinations(m) {
-  const [dr, dc] = DIRS[m.dir];
-  return m.cells
-    .map((i) => cellIndex(CELLS[i].r + dr, CELLS[i].c + dc))
-    .filter((i) => i !== undefined && !m.cells.includes(i));
+  return m.cells.map((i) => step(i, m.dir)).filter((i) => i !== undefined && !m.cells.includes(i));
+}
+
+/** 인라인 수에서 밀리는 상대 구슬 칸 */
+function pushedCells(m, boardStr = ui.state.board) {
+  if (!m.inline) return [];
+  const opp = ownChar() === 'b' ? 'w' : 'b';
+  const head = m.cells.find((i) => !m.cells.includes(step(i, m.dir)));
+  const out = [];
+  for (let t = step(head, m.dir); t !== undefined && boardStr[t] === opp; t = step(t, m.dir)) out.push(t);
+  return out;
 }
 
 function renderSelection() {
   layers.sel.replaceChildren();
   layers.arrows.replaceChildren();
+  layers.glow.replaceChildren();
+  const myTurn = isHumanTurn();
+
   if (!ui.selection.length) {
-    showHint(isHumanTurn() ? '움직일 구슬을 1~3개 고른다' : '');
+    if (myTurn) {
+      // 움직일 수 있는 내 구슬을 은은하게 표시
+      for (const [k, opts] of Object.entries(ui.singles)) {
+        if (!opts.some((o) => o.move)) continue;
+        const { r, c } = CELLS[Number(k)];
+        const [x, y] = px(r, c);
+        el('circle', { cx: x, cy: y, r: R_MARBLE + 5, class: 'glow' }, layers.glow);
+      }
+    }
     return;
   }
+
   const pts = ui.selection.map((i) => px(CELLS[i].r, CELLS[i].c));
   for (const [x, y] of pts) el('circle', { cx: x, cy: y, r: R_MARBLE + 4, class: 'sel-ring' }, layers.sel);
+  const opts = ui.options;
+  if (!opts) return;
 
-  const moves = selectionMoves();
-  if (!moves.length) {
-    showHint('이 줄은 지금 움직일 수 있는 방향이 없다');
-    return;
-  }
-  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
-  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
-  for (const m of moves) {
-    for (const t of destinations(m)) {
-      const [x, y] = px(CELLS[t].r, CELLS[t].c);
-      el('circle', { cx: x, cy: y, r: R_MARBLE * 0.5, class: 'target' }, layers.sel);
-    }
-    const [dr, dc] = DIRS[m.dir];
-    const [vx0, vy0] = [(dc - dr / 2) * S, -dr * H];
-    const len = Math.hypot(vx0, vy0);
-    const [ux, uy] = [vx0 / len, vy0 / len];
-    const reach = Math.max(...pts.map(([x, y]) => (x - cx) * ux + (y - cy) * uy));
-    const dist = reach + S * 0.95;
-    const ax = cx + ux * dist, ay = cy + uy * dist;
+  for (const o of opts) {
+    const [ux, uy] = dirVec(o.dir);
+    const m = o.move;
+    const [ax, ay] = arrowAnchor(o, pts);
     const angle = (Math.atan2(uy, ux) * 180) / Math.PI;
-    const kind = m.push_off ? 'off' : isPush(m) ? 'push' : '';
+    const kind = !m ? 'blocked' : m.push_off ? 'off' : pushedCells(m).length ? 'push' : 'go';
     const g = el('g', { class: `arrow ${kind}`, transform: `translate(${ax} ${ay})`, role: 'button', tabindex: 0 }, layers.arrows);
-    g.setAttribute('aria-label', `${m.text}${m.push_off ? ' 밀어내기' : ''}`);
-    el('circle', { r: 30 }, g);
-    el('path', { d: 'M -12 -13 L 16 0 L -12 13 Z', transform: `rotate(${angle})` }, g);
+    g.setAttribute('aria-label', m ? `${m.text}${m.push_off ? ' 밀어내기' : ''}` : '이 방향은 못 가요');
+    if (m) {
+      el('circle', { r: 38 }, g);
+      el('path', { d: 'M -14 -16 L 19 0 L -14 16 Z', transform: `rotate(${angle})` }, g);
+    } else {
+      el('circle', { r: 21 }, g);
+      el('path', { d: 'M -7 -8 L 10 0 L -7 8 Z', transform: `rotate(${angle})` }, g);
+    }
+    // 화살표를 누르고 있으면 같이 움직일 구슬을 미리 보여준다
+    if (m) {
+      g.addEventListener('pointerenter', () => preview(m));
+      g.addEventListener('pointerleave', () => preview(null));
+    }
     const go = (e) => {
       e.stopPropagation();
-      playHuman(m);
+      choose(o);
     };
     g.addEventListener('click', go);
     g.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && go(e));
   }
-  const offs = moves.filter((m) => m.push_off).length;
-  showHint(offs ? '빨간 화살표는 상대 구슬을 판 밖으로 밀어낸다' : '화살표나 표시된 칸을 눌러 이동');
 }
 
-function isPush(m) {
-  if (!m.inline) return false;
-  const [dr, dc] = DIRS[m.dir];
-  const color = ui.state.side === 'black' ? 'w' : 'b';
-  return m.cells.some((i) => {
-    const t = cellIndex(CELLS[i].r + dr, CELLS[i].c + dc);
-    return t !== undefined && ui.state.board[t] === color;
-  });
+/**
+ * 화살표 위치. 인라인은 줄 맨 앞 구슬의 다음 칸(그 칸이 판 밖이면 바로 바깥),
+ * 옆걸음은 도착 칸들 가운데. 그래서 고른 줄 옆의 내 구슬을 가리지 않는다.
+ */
+function arrowAnchor(o, pts) {
+  const [ux, uy] = dirVec(o.dir);
+  const own = ownChar();
+  const cells = o.move ? o.move.cells : ui.selection;
+  const inline = cells.length === 1 || cells.includes(step(cells[0], o.dir)) || cells.includes(step(cells[0], (o.dir + 3) % 6));
+  if (inline) {
+    let head = cells.find((i) => !cells.includes(step(i, o.dir)));
+    // 단일 선택에서 막힌 방향: 앞에 이어진 내 구슬을 건너뛴다
+    if (!o.move) {
+      while (step(head, o.dir) !== undefined && ui.state.board[step(head, o.dir)] === own) head = step(head, o.dir);
+    }
+    const t = step(head, o.dir);
+    if (t !== undefined) return px(CELLS[t].r, CELLS[t].c);
+    const [hx, hy] = px(CELLS[head].r, CELLS[head].c);
+    return [hx + ux * S * 0.72, hy + uy * S * 0.72];
+  }
+  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  return [cx + ux * S * 0.87, cy + uy * S * 0.87];
+}
+
+function preview(m) {
+  layers.sel.querySelectorAll('.preview').forEach((e) => e.remove());
+  if (!m) return;
+  for (const i of m.cells) {
+    if (ui.selection.includes(i)) continue;
+    const [x, y] = px(CELLS[i].r, CELLS[i].c);
+    el('circle', { cx: x, cy: y, r: R_MARBLE + 4, class: 'sel-ring preview' }, layers.sel);
+  }
+  for (const t of destinations(m)) {
+    const [x, y] = px(CELLS[t].r, CELLS[t].c);
+    el('circle', { cx: x, cy: y, r: R_MARBLE * 0.5, class: 'target preview' }, layers.sel);
+  }
 }
 
 const REASON = {
-  pushed_off: '구슬 6개를 밀어냄',
-  move_limit: '수 제한 도달',
-  repetition: '같은 국면 3회 반복',
-  no_moves: '둘 수 있는 수 없음',
+  pushed_off: '상대 구슬 6개를 밀어냈어요',
+  move_limit: '정해진 수를 다 뒀어요',
+  repetition: '같은 모양이 3번 나왔어요',
+  no_moves: '둘 수 있는 수가 없어요',
 };
-const KO = { black: '흑', white: '백' };
 
 function renderPanel(st) {
   for (const color of ['black', 'white']) {
@@ -265,22 +345,31 @@ function renderPanel(st) {
       s.className = 'slot' + (k < st.pushed[color] ? ` ${opp}` : '');
       box.appendChild(s);
     }
+    $(`count-${color}`).textContent = `${st.pushed[color]} / 6`;
     box.title = `${KO[color]}이 밀어낸 구슬 ${st.pushed[color]}개`;
     document.querySelector(`.score[data-color="${color}"]`).classList.toggle('active', st.outcome.status === 'ongoing' && st.side === color);
-    $(`tag-${color}`).textContent = ui.human === 'both' ? '' : ui.human === color ? ' 나' : ' 랜덤 AI';
+    $(`tag-${color}`).textContent = ui.human === 'both' ? '' : ui.human === color ? '나' : '컴퓨터';
   }
 
   const banner = $('banner');
+  const turn = $('turn');
   if (st.outcome.status === 'ongoing') {
     banner.hidden = true;
-    $('turn').textContent = `${KO[st.side]} 차례` + (isHumanTurn() ? '' : ' (AI 생각 중)');
+    const who = ui.human === 'both' ? '' : st.side === ui.human ? ' · 내 차례' : ' · 컴퓨터 차례';
+    turn.innerHTML = `<i class="dot ${st.side}"></i>${KO[st.side]} 차례${who}`;
   } else {
     banner.hidden = false;
     const why = REASON[st.outcome.reason] || st.outcome.reason;
     const pushed = `밀어낸 구슬 흑 ${st.pushed.black} : 백 ${st.pushed.white}`;
-    banner.textContent =
-      st.outcome.status === 'win' ? `${KO[st.outcome.winner]} 승리 — ${why} (${pushed})` : `무승부 — ${why} (${pushed})`;
-    $('turn').textContent = '대국 종료';
+    let head;
+    if (st.outcome.status === 'win') {
+      const w = st.outcome.winner;
+      head = ui.human === 'both' ? `${KO[w]} 승리!` : w === ui.human ? '이겼어요!' : '컴퓨터가 이겼어요';
+    } else {
+      head = '비겼어요';
+    }
+    banner.innerHTML = `<strong>${head}</strong><span>${why} · ${pushed}</span>`;
+    turn.textContent = '대국 끝';
   }
   $('ply').textContent = st.move_limit > 0 ? `${st.ply} / ${st.move_limit}수` : `${st.ply}수`;
 
@@ -319,12 +408,11 @@ const FEATURE_LABELS = {
 
 function renderFeatures() {
   const f = ui.features;
-  const t = $('features');
   if (!f) return;
   const rows = Object.entries(FEATURE_LABELS)
     .map(([k, label]) => `<tr><td>${label}</td><td>${f.black[k]}</td><td>${f.white[k]}</td></tr>`)
     .join('');
-  t.innerHTML = `<tr><th>특징값</th><th>흑</th><th>백</th></tr>${rows}`;
+  $('features').innerHTML = `<tr><th>특징값</th><th>흑</th><th>백</th></tr>${rows}`;
 }
 
 function moverOf(ply) {
@@ -332,8 +420,60 @@ function moverOf(ply) {
   return ply % 2 === 0 ? 'black' : 'white';
 }
 
-function showHint(text) {
-  $('hint').textContent = text;
+// ---------------------------------------------------------------- 안내 문장
+
+/** 못 가는 이유. 엔진이 계산한 코드와 숫자로만 만든다. */
+function reasonText(b) {
+  switch (b.code) {
+    case 'not_own': return '내 구슬이 아니에요.';
+    case 'not_line': return '한 줄로 붙어 있는 구슬만 같이 움직일 수 있어요.';
+    case 'too_many': return '한 번에 3개까지만 움직일 수 있어요.';
+    case 'off_board': return '내 구슬을 판 밖으로 보낼 수는 없어요.';
+    case 'not_stronger':
+      return b.theirs >= 3
+        ? `상대 구슬이 ${b.theirs}개 줄지어 있으면 밀 수 없어요. 한 번에 3개까지만 밀 수 있거든요.`
+        : `상대 구슬 ${b.theirs}개를 밀려면 내 구슬이 ${b.theirs + 1}개 필요해요. 지금은 ${b.mine}개예요.`;
+    case 'own_behind': return '상대 구슬 바로 뒤에 내 구슬이 있으면 밀 수 없어요.';
+    case 'broadside_blocked': return '옆으로 나란히 갈 때는 가는 칸이 모두 비어 있어야 해요. 옆으로는 밀 수 없어요.';
+    case 'own_in_way': return '앞에 내 구슬이 있어요. 그 구슬도 같이 골라 보세요.';
+    default: return '그쪽으로는 못 가요.';
+  }
+}
+
+function say(text, kind = 'info') {
+  const m = $('msg');
+  m.textContent = text;
+  m.className = `msg ${kind}`;
+}
+
+function idleMessage() {
+  const st = ui.state;
+  if (!st) return;
+  if (st.outcome.status !== 'ongoing') {
+    say('새 대국을 눌러 다시 해 봐요.');
+  } else if (!isHumanTurn()) {
+    say('컴퓨터가 생각하고 있어요…');
+  } else if (!ui.selection.length) {
+    say(`움직일 내 구슬(${KO[st.side]})을 눌러요. 빛나는 구슬이 움직일 수 있어요.`);
+  }
+}
+
+function selectionMessage() {
+  const opts = ui.options || [];
+  const n = ui.selection.length;
+  const ok = opts.filter((o) => o.move);
+  if (!ok.length) {
+    const reasons = [...new Set(opts.map((o) => o.blocked && o.blocked.code))];
+    const none = n === 1 ? '이 구슬은 지금 움직일 수 없어요. 다른 구슬을 골라 봐요.' : '고른 구슬들은 지금 같이 움직일 수 없어요. 회색 화살표를 누르면 이유를 알려 줘요.';
+    say(reasons.length === 1 && reasons[0] ? reasonText(opts[0].blocked) : none, 'warn');
+    return;
+  }
+  const extra = ok.some((o) => o.move.push_off) ? ' 빨간 화살표는 상대 구슬을 판 밖으로 밀어내요!' : '';
+  if (n === 1) {
+    say(`큰 화살표를 누르거나 구슬을 그쪽으로 밀어요. 앞에 있는 구슬도 같이 가요.${extra}`);
+  } else {
+    say(`${n}개를 같이 골랐어요. 화살표를 눌러 같이 움직여요. 다시 누르면 빠져요.${extra}`);
+  }
 }
 
 // ---------------------------------------------------------------- 입력
@@ -355,9 +495,8 @@ function segment(a, b) {
   return null;
 }
 
-function trySelect(cells) {
-  // 가장 먼 두 칸을 잇는 줄이 모든 칸을 포함하고 전부 내 구슬이면 그 줄을 선택
-  const own = ui.state.side === 'black' ? 'b' : 'w';
+/** 가장 먼 두 칸을 잇는 줄이 모든 칸을 포함하고 전부 내 구슬이면 그 줄 */
+function lineThrough(cells) {
   let best = null;
   for (const a of cells) {
     for (const b of cells) {
@@ -366,46 +505,141 @@ function trySelect(cells) {
     }
   }
   if (!best || !cells.every((c) => best.includes(c))) return null;
-  if (!best.every((c) => ui.state.board[c] === own)) return null;
-  return best;
+  return best.every((c) => ui.state.board[c] === ownChar()) ? best : null;
+}
+
+async function select(cells) {
+  ui.selection = cells;
+  if (cells.length === 0) {
+    ui.options = null;
+  } else if (cells.length === 1) {
+    ui.options = ui.singles[cells[0]] || null;
+  } else {
+    ui.options = null;
+    const want = cells.join(',');
+    const res = await call('group', { cells });
+    if (ui.selection.join(',') !== want) return; // 그새 선택이 바뀜
+    ui.options = res.options;
+  }
+  render();
+  if (cells.length) selectionMessage();
+  else idleMessage();
 }
 
 function onCellTap(i) {
   if (!isHumanTurn() || ui.busy) return;
-  const own = ui.state.side === 'black' ? 'b' : 'w';
   const v = ui.state.board[i];
-  if (v === own) {
+  if (v === ownChar()) {
     if (ui.selection.includes(i)) {
       const rest = ui.selection.filter((x) => x !== i);
-      ui.selection = rest.length && trySelect(rest)?.length === rest.length ? rest : [];
+      select(rest.length && lineThrough(rest)?.length === rest.length ? rest : []);
+    } else if (ui.selection.length) {
+      select(lineThrough([...ui.selection, i]) || [i]);
     } else {
-      ui.selection = trySelect([...ui.selection, i]) || [i];
+      select([i]);
     }
-    render();
     return;
   }
-  // 빈칸이나 상대 구슬: 선택한 줄의 이동 도착 칸이면 그 수를 둔다
-  if (ui.selection.length) {
-    const hit = selectionMoves().filter((m) => destinations(m).includes(i) || pushedCells(m).includes(i));
+  // 빈칸이나 상대 구슬: 고른 구슬이 갈 칸(또는 밀릴 상대 구슬)이면 그 수를 둔다
+  if (ui.selection.length && ui.options) {
+    const hit = ui.options.filter((o) => o.move && (destinations(o.move).includes(i) || pushedCells(o.move).includes(i)));
     if (hit.length === 1) {
-      playHuman(hit[0]);
+      choose(hit[0]);
       return;
     }
   }
-  ui.selection = [];
-  render();
+  if (v !== '.' && v !== ownChar()) {
+    say(`그건 상대 구슬이에요. 내 구슬(${KO[ui.state.side]})을 눌러요.`, 'warn');
+    ui.selection = [];
+    ui.options = null;
+    render();
+    return;
+  }
+  select([]);
 }
 
-/** 인라인 수에서 앞에 있는 상대 구슬 칸 (그 칸을 눌러도 밀기로 인식) */
-function pushedCells(m) {
-  if (!m.inline) return [];
-  const [dr, dc] = DIRS[m.dir];
-  const out = [];
-  for (const i of m.cells) {
-    const t = cellIndex(CELLS[i].r + dr, CELLS[i].c + dc);
-    if (t !== undefined && !m.cells.includes(t) && ui.state.board[t] !== '.') out.push(t);
+function onSwipe(i, dir) {
+  if (!isHumanTurn() || ui.busy) return;
+  if (ui.state.board[i] !== ownChar()) {
+    say(`내 구슬(${KO[ui.state.side]})을 밀어야 해요.`, 'warn');
+    return;
   }
-  return out;
+  const o =
+    ui.selection.length > 1 && ui.selection.includes(i) && ui.options
+      ? ui.options[dir]
+      : (ui.singles[i] || [])[dir];
+  if (!o) return;
+  if (!o.move) {
+    ui.selection = [i];
+    ui.options = ui.singles[i] || null;
+    render();
+  }
+  choose(o);
+}
+
+function choose(o) {
+  if (o.move) {
+    playHuman(o.move);
+  } else {
+    say(reasonText(o.blocked), 'warn');
+    shake();
+  }
+}
+
+function shake() {
+  board.classList.remove('shake');
+  void board.getBoundingClientRect();
+  board.classList.add('shake');
+}
+
+// ---------------------------------------------------------------- 수 두기와 애니메이션
+
+/** 직전 수(state.last)를 이전 판 위에서 미끄러지듯 보여준다. */
+function animateLast(prevBoard, st) {
+  const last = st.last;
+  if (!last) return Promise.resolve();
+  renderMarbles(prevBoard);
+  layers.marks.replaceChildren();
+  layers.sel.replaceChildren();
+  layers.arrows.replaceChildren();
+  layers.glow.replaceChildren();
+  const color = prevBoard[last.cells[0]];
+  const opp = color === 'b' ? 'w' : 'b';
+  const moving = [...last.cells];
+  const inline = last.cells.length === 1 || last.cells.includes(step(last.cells[0], last.dir)) || last.cells.includes(step(last.cells[0], (last.dir + 3) % 6));
+  if (inline) {
+    const head = last.cells.find((i) => !last.cells.includes(step(i, last.dir)));
+    for (let t = step(head, last.dir); t !== undefined && prevBoard[t] === opp; t = step(t, last.dir)) moving.push(t);
+  }
+  const [dr, dc] = DIRS[last.dir];
+  const dx = (dc - dr / 2) * S, dy = -dr * H;
+  const anims = moving.map((i) => {
+    const e = marbleEls.get(i);
+    if (!e) return Promise.resolve();
+    e.parentNode.appendChild(e); // 움직이는 구슬을 위로
+    const off = step(i, last.dir) === undefined;
+    const frames = off
+      ? [
+          { transform: 'translate(0px, 0px)', opacity: 1 },
+          { transform: `translate(${dx}px, ${dy}px)`, opacity: 1, offset: 0.6 },
+          { transform: `translate(${dx * 1.6}px, ${dy * 1.6 + 30}px) scale(0.4)`, opacity: 0 },
+        ]
+      : [{ transform: 'translate(0px, 0px)' }, { transform: `translate(${dx}px, ${dy}px)` }];
+    e.style.transformBox = 'fill-box';
+    e.style.transformOrigin = 'center';
+    const a = e.animate(frames, { duration: off ? MOVE_MS * 2.2 : MOVE_MS, easing: 'ease-in-out', fill: 'forwards' });
+    return a.finished.catch(() => {});
+  });
+  return Promise.all(anims);
+}
+
+async function applyMove(res) {
+  const prev = ui.state.board;
+  setState(res);
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    await animateLast(prev, res.state);
+  }
+  render();
 }
 
 async function playHuman(m) {
@@ -413,7 +647,9 @@ async function playHuman(m) {
   ui.busy = true;
   try {
     const res = await call('play', { text: m.text });
-    apply(res);
+    await applyMove(res);
+    if (m.push_off) say('밀어냈어요! 상대 구슬 하나가 판 밖으로 나갔어요.', 'good');
+    else idleMessage();
   } finally {
     ui.busy = false;
   }
@@ -422,18 +658,27 @@ async function playHuman(m) {
 
 function maybeAi() {
   const st = ui.state;
-  if (!st || st.outcome.status !== 'ongoing' || ui.human === 'both' || st.side === ui.human) return;
+  if (!st || st.outcome.status !== 'ongoing' || ui.human === 'both' || st.side === ui.human) {
+    if (st && st.outcome.status !== 'ongoing') idleMessage();
+    return;
+  }
   const token = ++ui.aiToken;
   render();
+  idleMessage();
   setTimeout(async () => {
     if (token !== ui.aiToken) return;
     ui.busy = true;
     try {
       const r = await call('random');
       if (token !== ui.aiToken || !r.move) return;
+      const pushedBefore = ui.state.pushed;
       const res = await call('play', { text: r.move });
       if (token !== ui.aiToken) return;
-      apply(res);
+      await applyMove(res);
+      const lost = res.state.pushed[res.state.side === 'black' ? 'white' : 'black'] > pushedBefore[res.state.side === 'black' ? 'white' : 'black'];
+      if (res.state.outcome.status === 'ongoing') {
+        say(lost ? '앗, 컴퓨터가 내 구슬을 밀어냈어요. 이제 내 차례예요.' : '컴퓨터가 움직였어요(노란 테두리). 이제 내 차례예요.', lost ? 'warn' : 'info');
+      }
     } finally {
       ui.busy = false;
     }
@@ -442,15 +687,17 @@ function maybeAi() {
 }
 
 async function undo() {
-  ui.aiToken++; // 진행 중인 AI 수 취소
+  ui.aiToken++; // 진행 중인 컴퓨터 수 취소
   ui.busy = true;
   try {
     let res = await call('undo', { count: 1 });
-    // AI 상대일 때는 내 차례가 될 때까지 더 무른다
+    // 컴퓨터 상대일 때는 내 차례가 될 때까지 더 무른다
     while (ui.human !== 'both' && res.state.history.length > 0 && res.state.side !== ui.human) {
       res = await call('undo', { count: 1 });
     }
-    apply(res);
+    setState(res);
+    render();
+    say('한 수 물렀어요.');
   } finally {
     ui.busy = false;
   }
@@ -464,9 +711,11 @@ async function newGame() {
   $('limit').value = limit;
   ui.busy = true;
   try {
-    apply(await call('new', { layout: $('layout').value, moveLimit: limit }));
+    setState(await call('new', { layout: $('layout').value, moveLimit: limit }));
+    render();
+    idleMessage();
   } catch (e) {
-    showHint(`엔진 오류: ${e.message}`);
+    say(`엔진 오류: ${e.message}`, 'warn');
   } finally {
     ui.busy = false;
   }
@@ -478,15 +727,9 @@ $('setup').addEventListener('submit', (e) => {
   newGame();
 });
 $('undo').addEventListener('click', undo);
-$('clear').addEventListener('click', () => {
-  ui.selection = [];
-  render();
-});
+$('clear').addEventListener('click', () => select([]));
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    ui.selection = [];
-    render();
-  }
+  if (e.key === 'Escape') select([]);
 });
 
 buildBoard();

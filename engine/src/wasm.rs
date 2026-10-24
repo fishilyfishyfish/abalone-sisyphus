@@ -41,6 +41,16 @@ impl WasmGame {
         json::features_json(&features::compute(&self.game.pos))
     }
 
+    /// 둘 차례인 쪽 구슬마다 방향별 선택지 (구슬 하나를 눌렀을 때).
+    pub fn single_options(&self) -> String {
+        json::single_options_json(&self.game)
+    }
+
+    /// 고른 칸들(정규 칸 번호)을 그대로 움직이는 방향별 선택지.
+    pub fn group_options(&self, cells: &[u8]) -> String {
+        json::group_options_json(&self.game, cells)
+    }
+
     /// 표기로 수를 둔다. 성공하면 true.
     pub fn play(&mut self, text: &str) -> bool {
         if self.game.is_over() {
