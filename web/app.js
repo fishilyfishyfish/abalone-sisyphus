@@ -446,6 +446,10 @@ const FEATURE_LABELS = {
   endangered: '다음 수에 밀려날 구슬',
   attackable: '다음 수에 밀어낼 구슬',
   isolated: '고립된 구슬',
+  push_moves: '밀기 기회 (미는 수)',
+  triples: '3개 줄',
+  groups: '덩어리 수',
+  mobility: '움직일 수 있는 수',
 };
 
 const signed = (v) => (v > 0 ? `+${v}` : String(v));

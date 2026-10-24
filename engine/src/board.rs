@@ -393,6 +393,46 @@ pub fn push_off_targets(own: u128, opp: u128) -> u128 {
     targets
 }
 
+/// own 쪽 합법수 개수와, 그중 상대 구슬을 미는 수(판 밖 밀어내기 포함) 개수.
+/// `gen_moves`와 같은 순회를 하되 수를 만들지 않고 센다 (평가함수용).
+pub fn count_moves(own: u128, opp: u128) -> (i32, i32) {
+    let empty = VALID & !(own | opp);
+    let (mut total, mut pushes) = (0, 0);
+    for s in Bits(own) {
+        for dd in DIRS {
+            if has(empty, s + dd) {
+                total += 1;
+            }
+        }
+        for (a, &da) in DIRS[..3].iter().enumerate() {
+            if !has(own, s + da) {
+                continue;
+            }
+            for n in 2..=3i32 {
+                if n == 3 && !has(own, s + 2 * da) {
+                    break;
+                }
+                for (head, dd) in [(s + (n - 1) * da, da), (s, -da)] {
+                    match inline_result(own, opp, head, dd, n) {
+                        Some(InlineResult::Step) => total += 1,
+                        Some(_) => {
+                            total += 1;
+                            pushes += 1;
+                        }
+                        None => {}
+                    }
+                }
+                for (d, &dd) in DIRS.iter().enumerate() {
+                    if d % 3 != a && (0..n).all(|i| has(empty, s + i * da + dd)) {
+                        total += 1;
+                    }
+                }
+            }
+        }
+    }
+    (total, pushes)
+}
+
 /// own 쪽 합법수 중 상대 구슬을 판 밖으로 밀어내는 수만 out에 추가한다 (정지 탐색용).
 pub fn gen_push_offs(own: u128, opp: u128, out: &mut Vec<Move>) {
     for s in Bits(own) {

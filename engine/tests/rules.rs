@@ -265,6 +265,10 @@ fn features_basic() {
             endangered: 0,
             attackable: 0,
             isolated: 1,
+            push_moves: 0,
+            triples: 0,
+            groups: 2,
+            mobility: f.black.mobility,
         }
     );
     assert_eq!(f.white.cohesion, 1);
@@ -301,6 +305,25 @@ fn pushed_off_marbles_count_as_off_board_distance() {
     let m = parse_move(&g.pos, "E7E8").unwrap();
     assert!(g.play(m));
     assert_eq!(features::compute(&g.pos).black.center_distance, before + 1);
+}
+
+#[test]
+fn new_shape_features() {
+    // 흑: E2 E3 E4 E5 (4개 일렬 → 3개 줄 2곳), A1 따로 → 덩어리 2. 백: E6, I9
+    let p = pos(&["E2", "E3", "E4", "E5", "A1"], &["E6", "I9"], Color::Black);
+    let f = features::compute(&p);
+    assert_eq!(f.black.triples, 2);
+    assert_eq!(f.black.groups, 2);
+    // 흑이 백 E6을 미는 수: E3E4(3:1 → E3 E4 E5가 E6을 E7로), E4E5(2:1)
+    assert_eq!(f.black.push_moves, 2);
+    assert_eq!(f.white.push_moves, 0);
+    assert_eq!(f.white.groups, 2);
+    assert_eq!(f.white.triples, 0);
+    // 합법수 개수는 수 생성 결과와 같다
+    assert_eq!(f.black.mobility as usize, p.legal_moves().len());
+    let mut pw = p;
+    pw.side = Color::White;
+    assert_eq!(f.white.mobility as usize, pw.legal_moves().len());
 }
 
 #[test]

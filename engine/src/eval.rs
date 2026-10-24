@@ -5,9 +5,8 @@
 //! 기여도 차이는 `w[i] × (diff_a[i] − diff_b[i])`다. 합은 평가 차이와 정확히 같다.
 
 use crate::board::{Color, Position};
+pub use crate::features::NUM_FEATURES;
 use crate::features::{self, FEATURE_NAMES};
-
-pub const NUM_FEATURES: usize = 7;
 
 /// 승리 점수. 탐색에서는 `WIN − 수순 길이`로 써서 빠른 승리를 고른다.
 pub const WIN: i32 = 1_000_000;
@@ -26,16 +25,17 @@ pub struct Weights(pub [i32; NUM_FEATURES]);
 /// - endangered −75, attackable +75: 두 값은 차이로 보면 부호만 반대(내 attackable = 상대 endangered)라
 ///   합쳐서 "다음 수 밀어내기 위협 1개당 150점" 한 항목처럼 작동한다. 설명 층은 둘을 한 쌍으로 다룬다
 /// - isolated −30: 고립 구슬 하나
-pub const WEIGHTS_V0: Weights = Weights([1000, -20, 10, -15, -75, 75, -30]);
+pub const WEIGHTS_V0: Weights = Weights([1000, -20, 10, -15, -75, 75, -30, 0, 0, 0, 0]);
 
 /// v1: v0 자기대국(깊이 3, 3000판, 조용한 국면 33.6만 개) 텍셀 튜닝, 부호 제약(가장자리 0으로 묶임).
 /// center_distance는 밀려난 구슬을 거리 5로 치는 정의 기준이다.
-pub const WEIGHTS_V1: Weights = Weights([1000, -141, 106, 0, -77, 77, -33]);
+pub const WEIGHTS_V1: Weights = Weights([1000, -141, 106, 0, -77, 77, -33, 0, 0, 0, 0]);
 
 /// 엔진이 쓰는 가중치.
 pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V1;
 
-/// 이름("v0", "default")이나 "w:" 뒤 쉼표 목록(7개)으로 가중치를 고른다. 측정·튜닝 도구용.
+/// 이름("v0", "default")이나 "w:" 뒤 쉼표 목록으로 가중치를 고른다. 측정·튜닝 도구용.
+/// 목록이 특징 수보다 짧으면 나머지는 0이다 (예: 예전 7개짜리 목록).
 pub fn weights_by_name(name: &str) -> Option<Weights> {
     match name {
         "v0" => Some(WEIGHTS_V0),
@@ -47,7 +47,12 @@ pub fn weights_by_name(name: &str) -> Option<Weights> {
                 .split(',')
                 .map(|x| x.trim().parse().ok())
                 .collect::<Option<_>>()?;
-            Some(Weights(v.try_into().ok()?))
+            if v.len() > NUM_FEATURES {
+                return None;
+            }
+            let mut w = [0; NUM_FEATURES];
+            w[..v.len()].copy_from_slice(&v);
+            Some(Weights(w))
         }
     }
 }

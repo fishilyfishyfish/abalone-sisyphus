@@ -133,37 +133,58 @@ fn read(paths: &[String]) -> Vec<Row> {
     rows
 }
 
-/// 회귀 입력: endangered(4)/attackable(5)을 합친 6개 특징. 합친 항은 endangered 차이.
-const COLS: [usize; 6] = [0, 1, 2, 3, 4, 6];
+/// 회귀 입력 개수: attackable(5)은 endangered(4)와 차이가 정확히 부호만 반대라 빼고 합친다.
+const K: usize = NUM_FEATURES - 1;
+/// 회귀 j번째 계수가 가리키는 특징 번호 (attackable 건너뜀)
+const COLS: [usize; K] = {
+    let mut c = [0; K];
+    let mut j = 0;
+    while j < K {
+        c[j] = if j < 5 { j } else { j + 1 };
+        j += 1;
+    }
+    c
+};
 
-fn x_of(d: &[i32; NUM_FEATURES]) -> [f64; 6] {
+fn x_of(d: &[i32; NUM_FEATURES]) -> [f64; K] {
     std::array::from_fn(|j| d[COLS[j]] as f64)
+}
+
+/// 가중치를 회귀 계수 꼴로 (합친 항 = w_end − w_att)
+fn base_of(w: &Weights) -> [f64; K] {
+    std::array::from_fn(|j| {
+        if COLS[j] == 4 {
+            (w.0[4] - w.0[5]) as f64
+        } else {
+            w.0[COLS[j]] as f64
+        }
+    })
 }
 
 fn sigmoid(z: f64) -> f64 {
     1.0 / (1.0 + (-z).exp())
 }
 
-fn log_loss(rows: &[Row], beta: &[f64; 6]) -> f64 {
+fn log_loss(rows: &[Row], beta: &[f64; K]) -> f64 {
     let mut l = 0.0;
     for (d, y) in rows {
         let x = x_of(d);
-        let z: f64 = (0..6).map(|j| beta[j] * x[j]).sum();
+        let z: f64 = (0..K).map(|j| beta[j] * x[j]).sum();
         let p = sigmoid(z).clamp(1e-12, 1.0 - 1e-12);
         l -= y * p.ln() + (1.0 - y) * (1.0 - p).ln();
     }
     l / rows.len() as f64
 }
 
-/// 6×6 연립방정식 (가우스 소거)
-fn solve(mut a: [[f64; 6]; 6], mut b: [f64; 6]) -> [f64; 6] {
-    for i in 0..6 {
-        let piv = (i..6)
+/// K×K 연립방정식 (가우스 소거)
+fn solve(mut a: [[f64; K]; K], mut b: [f64; K]) -> [f64; K] {
+    for i in 0..K {
+        let piv = (i..K)
             .max_by(|&x, &y| a[x][i].abs().total_cmp(&a[y][i].abs()))
             .unwrap();
         a.swap(i, piv);
         b.swap(i, piv);
-        for r in 0..6 {
+        for r in 0..K {
             if r != i {
                 let f = a[r][i] / a[i][i];
                 let pivot_row = a[i];
@@ -177,15 +198,17 @@ fn solve(mut a: [[f64; 6]; 6], mut b: [f64; 6]) -> [f64; 6] {
     std::array::from_fn(|i| b[i] / a[i][i])
 }
 
-/// 설명 문장이 상식과 같은 방향이 되도록 정한 부호: 밀어낸 구슬 +, 중앙 거리 −, 뭉침 +,
-/// 가장자리 −, 밀려날 위험 −, 고립 −. 회귀가 반대 부호를 내면 그 항목을 0에 묶고 다시 맞춘다.
-const SIGN: [f64; 6] = [1.0, -1.0, 1.0, -1.0, -1.0, -1.0];
+/// 설명 문장이 상식과 같은 방향이 되도록 정한 부호 (회귀 계수 순서):
+/// 밀어낸 구슬 +, 중앙 거리 −, 뭉침 +, 가장자리 −, 밀려날 위험 −, 고립 −,
+/// 밀기 기회 +, 3개 줄 +, 덩어리 수 −, 움직임 +.
+/// 회귀가 반대 부호를 내면 그 항목을 0에 묶고 다시 맞춘다.
+const SIGN: [f64; K] = [1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0];
 
-fn fit_constrained(rows: &[Row], lambda: f64) -> ([f64; 6], Vec<usize>) {
+fn fit_constrained(rows: &[Row], lambda: f64) -> ([f64; K], Vec<usize>) {
     let mut fixed = Vec::new();
     loop {
         let beta = fit_newton_masked(rows, lambda, &fixed);
-        let bad: Vec<usize> = (0..6)
+        let bad: Vec<usize> = (0..K)
             .filter(|&j| !fixed.contains(&j) && beta[j] * SIGN[j] < 0.0)
             .collect();
         if bad.is_empty() {
@@ -204,43 +227,43 @@ fn fit_constrained(rows: &[Row], lambda: f64) -> ([f64; 6], Vec<usize>) {
     }
 }
 
-fn fit_newton(rows: &[Row], lambda: f64) -> [f64; 6] {
+fn fit_newton(rows: &[Row], lambda: f64) -> [f64; K] {
     fit_newton_masked(rows, lambda, &[])
 }
 
 /// fixed에 든 계수는 0으로 둔 채 나머지만 맞춘다
-fn fit_newton_masked(rows: &[Row], lambda: f64, fixed: &[usize]) -> [f64; 6] {
-    let mut beta = [0.0; 6];
+fn fit_newton_masked(rows: &[Row], lambda: f64, fixed: &[usize]) -> [f64; K] {
+    let mut beta = [0.0; K];
     let n = rows.len() as f64;
     for _ in 0..30 {
-        let mut g = [0.0; 6];
-        let mut h = [[0.0; 6]; 6];
+        let mut g = [0.0; K];
+        let mut h = [[0.0; K]; K];
         for (d, y) in rows {
             let x = x_of(d);
-            let z: f64 = (0..6).map(|j| beta[j] * x[j]).sum();
+            let z: f64 = (0..K).map(|j| beta[j] * x[j]).sum();
             let p = sigmoid(z);
             let wgt = p * (1.0 - p);
-            for j in 0..6 {
+            for j in 0..K {
                 g[j] += (p - y) * x[j] / n;
-                for k in 0..6 {
+                for k in 0..K {
                     h[j][k] += wgt * x[j] * x[k] / n;
                 }
             }
         }
-        for j in 0..6 {
+        for j in 0..K {
             g[j] += 2.0 * lambda * beta[j];
             h[j][j] += 2.0 * lambda;
         }
         for &j in fixed {
             g[j] = 0.0;
-            h[j] = [0.0; 6];
+            h[j] = [0.0; K];
             for row in h.iter_mut() {
                 row[j] = 0.0;
             }
             h[j][j] = 1.0;
         }
         let step = solve(h, g);
-        for j in 0..6 {
+        for j in 0..K {
             beta[j] -= step[j];
         }
         if step.iter().map(|s| s.abs()).fold(0.0, f64::max) < 1e-10 {
@@ -252,19 +275,11 @@ fn fit_newton_masked(rows: &[Row], lambda: f64, fixed: &[usize]) -> [f64; 6] {
 
 /// 주어진 가중치를 그대로 쓰고 점수 배율 k만 맞췄을 때의 손실
 fn loss_of_weights(rows: &[Row], w: &Weights) -> (f64, f64) {
-    let combined = (w.0[4] - w.0[5]) as f64; // endangered 차이에 곱해지는 실제 계수
-    let base = [
-        w.0[0] as f64,
-        w.0[1] as f64,
-        w.0[2] as f64,
-        w.0[3] as f64,
-        combined,
-        w.0[6] as f64,
-    ];
+    let base = base_of(w);
     let mut best = (f64::MAX, 0.0);
     let mut k = 1e-5;
     while k < 1e-2 {
-        let beta: [f64; 6] = std::array::from_fn(|j| base[j] * k);
+        let beta: [f64; K] = std::array::from_fn(|j| base[j] * k);
         let l = log_loss(rows, &beta);
         if l < best.0 {
             best = (l, k);
@@ -274,13 +289,22 @@ fn loss_of_weights(rows: &[Row], w: &Weights) -> (f64, f64) {
     best
 }
 
-fn to_weights(beta: &[f64; 6]) -> Weights {
+fn to_weights(beta: &[f64; K]) -> Weights {
     let s = 1000.0 / beta[0];
-    let r = |j: usize| (beta[j] * s).round() as i32;
-    let c = r(4);
-    // 합친 계수 c = w_end − w_att 를 반씩: w_end = c/2, w_att = −c/2
-    let half = (c as f64 / 2.0).round() as i32;
-    Weights([1000, r(1), r(2), r(3), half, -half, r(5)])
+    let mut w = [0; NUM_FEATURES];
+    for j in 0..K {
+        let v = (beta[j] * s).round() as i32;
+        if COLS[j] == 4 {
+            // 합친 계수 c = w_end − w_att 를 반씩: w_end = c/2, w_att = −c/2
+            let half = (v as f64 / 2.0).round() as i32;
+            w[4] = half;
+            w[5] = -half;
+        } else {
+            w[COLS[j]] = v;
+        }
+    }
+    w[0] = 1000;
+    Weights(w)
 }
 
 fn fit(paths: &[String], compare: &str) {
@@ -332,16 +356,8 @@ fn fit(paths: &[String], compare: &str) {
     );
     let cw = weights_by_name(compare).expect("compare weights");
     let (l_tr, k) = loss_of_weights(&train, &cw);
-    let beta_c: [f64; 6] = {
-        let c = (cw.0[4] - cw.0[5]) as f64;
-        let base = [
-            cw.0[0] as f64,
-            cw.0[1] as f64,
-            cw.0[2] as f64,
-            cw.0[3] as f64,
-            c,
-            cw.0[6] as f64,
-        ];
+    let beta_c: [f64; K] = {
+        let base = base_of(&cw);
         std::array::from_fn(|j| base[j] * k)
     };
     println!(

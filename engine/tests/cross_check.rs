@@ -68,7 +68,8 @@ impl Naive {
     }
 
     /// side 쪽이 둔다고 가정한 합법수와, 각 수가 밀어내는 칸 (없으면 None)
-    fn moves_for(&self, side: u8) -> Vec<(NMove, Option<Cell>)> {
+    /// side 쪽이 둔다고 가정한 합법수, 각 수가 밀어내는 칸, 상대 구슬을 미는지
+    fn moves_for(&self, side: u8) -> Vec<(NMove, Option<Cell>, bool)> {
         let opp = 3 - side;
         let mut groups: BTreeSet<(Vec<Cell>, Option<Cell>)> = BTreeSet::new();
         for (&a, &col) in &self.cells {
@@ -133,10 +134,10 @@ impl Naive {
                         p = add(p, d);
                     }
                     if let Some(cap) = ok {
-                        out.push((key, cap));
+                        out.push((key, cap, opp_count > 0));
                     }
                 } else if g.iter().all(|&x| on(add(x, d)) && self.get(add(x, d)) == 0) {
-                    out.push((key, None));
+                    out.push((key, None, false));
                 }
             }
         }
@@ -186,7 +187,7 @@ impl Naive {
         (x.abs() + y.abs() + z.abs()) / 2
     }
 
-    fn features(&self, side: u8) -> [i32; 7] {
+    fn features(&self, side: u8) -> [i32; 11] {
         let own: Vec<Cell> = self
             .cells
             .iter()
@@ -205,6 +206,37 @@ impl Naive {
             .iter()
             .filter(|&&c| V.iter().all(|&v| self.get(add(c, v)) != side))
             .count();
+        let mine = self.moves_for(side);
+        // 일렬 3개: 양의 3방향으로 c, c+v, c+2v가 모두 내 구슬
+        let triples = own
+            .iter()
+            .map(|&c| {
+                V[..3]
+                    .iter()
+                    .filter(|&&v| {
+                        self.get(add(c, v)) == side && self.get(add(add(c, v), v)) == side
+                    })
+                    .count() as i32
+            })
+            .sum::<i32>();
+        // 덩어리: 너비 우선 탐색
+        let mut seen: BTreeSet<Cell> = BTreeSet::new();
+        let mut groups = 0;
+        for &c in &own {
+            if !seen.insert(c) {
+                continue;
+            }
+            groups += 1;
+            let mut stack = vec![c];
+            while let Some(x) = stack.pop() {
+                for v in V {
+                    let y = add(x, v);
+                    if self.get(y) == side && seen.insert(y) {
+                        stack.push(y);
+                    }
+                }
+            }
+        }
         let targets = |who: u8| -> i32 {
             let s: BTreeSet<Cell> = self
                 .moves_for(who)
@@ -222,6 +254,10 @@ impl Naive {
             targets(3 - side),
             targets(side),
             isolated as i32,
+            mine.iter().filter(|x| x.2).count() as i32,
+            triples,
+            groups,
+            mine.len() as i32,
         ]
     }
 }
