@@ -18,7 +18,7 @@ pub const WIN_BOUND: i32 = WIN - 1_000;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Weights(pub [i32; NUM_FEATURES]);
 
-/// 손으로 정한 초기값. 4단계 자기대국 튜닝에서 바뀐다.
+/// v0: 3단계에서 손으로 정한 초기값.
 /// - pushed_off 1000: 구슬 하나 = 1000점이 기준 단위
 /// - center_distance −20: 중앙에서 한 칸 멀어질 때마다
 /// - cohesion +10: 맞닿은 쌍 하나
@@ -26,7 +26,26 @@ pub struct Weights(pub [i32; NUM_FEATURES]);
 /// - endangered −75, attackable +75: 두 값은 차이로 보면 부호만 반대(내 attackable = 상대 endangered)라
 ///   합쳐서 "다음 수 밀어내기 위협 1개당 150점" 한 항목처럼 작동한다. 설명 층은 둘을 한 쌍으로 다룬다
 /// - isolated −30: 고립 구슬 하나
-pub const DEFAULT_WEIGHTS: Weights = Weights([1000, -20, 10, -15, -75, 75, -30]);
+pub const WEIGHTS_V0: Weights = Weights([1000, -20, 10, -15, -75, 75, -30]);
+
+/// 엔진이 쓰는 가중치.
+pub const DEFAULT_WEIGHTS: Weights = WEIGHTS_V0;
+
+/// 이름("v0", "default")이나 "w:" 뒤 쉼표 목록(7개)으로 가중치를 고른다. 측정·튜닝 도구용.
+pub fn weights_by_name(name: &str) -> Option<Weights> {
+    match name {
+        "v0" => Some(WEIGHTS_V0),
+        "default" => Some(DEFAULT_WEIGHTS),
+        _ => {
+            let list = name.strip_prefix("w:")?;
+            let v: Vec<i32> = list
+                .split(',')
+                .map(|x| x.trim().parse().ok())
+                .collect::<Option<_>>()?;
+            Some(Weights(v.try_into().ok()?))
+        }
+    }
+}
 
 /// 둘 차례 쪽 관점의 평가값 (승패 판정은 포함하지 않음).
 pub fn evaluate(pos: &Position, w: &Weights) -> i32 {

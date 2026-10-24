@@ -3,13 +3,14 @@
 //!
 //! 실행: cargo run --release --example strength -- <A> <B> [오프닝 쌍 수=20] [무작위 시작 수=4]
 //! 설정: random | easy | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
+//! 뒤에 @가중치를 붙이면 그 가중치로 둔다: d3@v0, t500@w:1000,-20,10,-15,-75,75,-30
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use abalone_engine::ai::{self, Level};
 use abalone_engine::board::{Color, Move};
-use abalone_engine::eval::DEFAULT_WEIGHTS;
+use abalone_engine::eval::{weights_by_name, Weights};
 use abalone_engine::game::{Game, GameConfig, Outcome};
 use abalone_engine::layouts::Layout;
 use abalone_engine::rng::Rng;
@@ -21,6 +22,11 @@ enum Player {
     Easy,
     Depth(u32),
     Time(f64),
+}
+
+fn parse_spec(spec: &str) -> (Player, Weights) {
+    let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
+    (parse(p), weights_by_name(w).expect("unknown weights"))
 }
 
 fn parse(s: &str) -> Player {
@@ -90,8 +96,10 @@ struct GameResult {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let a = parse(args.get(1).map_or("d3", |s| s));
-    let b = parse(args.get(2).map_or("d2", |s| s));
+    let a_spec = args.get(1).map_or("d3", |s| s).to_string();
+    let b_spec = args.get(2).map_or("d2", |s| s).to_string();
+    let (a, wa_) = parse_spec(&a_spec);
+    let (b, wb_) = parse_spec(&b_spec);
     let pairs: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
     let open_plies: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(4);
     let layouts = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy];
@@ -109,8 +117,8 @@ fn main() {
         .map(|t| {
             let (openings, next, results) = (openings.clone(), next.clone(), results.clone());
             std::thread::spawn(move || {
-                let mut sa = Searcher::with_std_clock(20, DEFAULT_WEIGHTS);
-                let mut sb = Searcher::with_std_clock(20, DEFAULT_WEIGHTS);
+                let mut sa = Searcher::with_std_clock(20, wa_);
+                let mut sb = Searcher::with_std_clock(20, wb_);
                 let mut rng = Rng::new(1000 + t);
                 loop {
                     let job = next.fetch_add(1, Ordering::SeqCst);
@@ -197,7 +205,7 @@ fn main() {
     let s = (w as f64 + d as f64 / 2.0) / n;
     let se = (s * (1.0 - s) / n).sqrt().max(0.5 / n);
     println!(
-        "{a:?} vs {b:?}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}",
+        "{a_spec} vs {b_spec}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}",
         s * 100.0,
         elo(s, n),
         elo(s - 1.96 * se, n),
