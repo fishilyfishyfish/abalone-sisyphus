@@ -33,6 +33,7 @@
           <option value="hard">어려움</option>
         </select>
       </label>
+      <label class="check"><input id="friendly" type="checkbox" checked> 친절 모드</label>
       <label>수 제한
         <input id="limit" type="number" min="0" max="2000" step="1" value="200" inputmode="numeric">
       </label>
@@ -69,8 +70,16 @@
 
       <div class="actions">
         <button id="undo" class="btn">↶ 무르기</button>
+        <button id="hint" class="btn hint">힌트</button>
         <button id="clear" class="btn ghost">선택 해제</button>
       </div>
+
+      <section id="feedback" class="feedback" hidden>
+        <h3>방금 둔 수 <span id="fb-grade" class="grade"></span></h3>
+        <ul id="fb-sentences"></ul>
+      </section>
+
+      <button id="review-btn" class="btn ghost wide">복기하기 (수마다 실수 등급과 설명)</button>
 
       <details class="help">
         <summary>어떻게 해요?</summary>
@@ -83,8 +92,31 @@
         </ul>
       </details>
 
+      <div id="play-only">
       <h2>기보</h2>
       <ol id="moves" class="moves"></ol>
+      </div>
+
+      <section id="review" class="review" hidden>
+        <div class="review-head">
+          <h2>복기</h2>
+          <span id="rv-progress" class="muted"></span>
+        </div>
+        <ol id="rv-list" class="rv-list"></ol>
+        <div class="rv-nav">
+          <button id="rv-prev" class="btn ghost">◀ 이전 수</button>
+          <button id="rv-next" class="btn ghost">다음 수 ▶</button>
+        </div>
+        <div class="rv-box explain">
+          <h3>설명</h3>
+          <ul id="rv-sentences"></ul>
+        </div>
+        <div class="rv-box engine">
+          <h3>엔진 판단</h3>
+          <div id="rv-engine"></div>
+        </div>
+        <button id="rv-exit" class="btn wide">대국으로 돌아가기</button>
+      </section>
 
       <details class="feat" id="engine">
         <summary>엔진 판단</summary>
@@ -94,6 +126,17 @@
       </details>
     </aside>
   </main>
+
+  <dialog id="warn" class="warn">
+    <h2>잠깐!</h2>
+    <p id="warn-grade" class="warn-grade"></p>
+    <ul id="warn-sentences"></ul>
+    <div class="warn-actions">
+      <button id="warn-cancel" class="btn">다시 생각할래요</button>
+      <button id="warn-hint" class="btn hint">힌트 보기</button>
+      <button id="warn-play" class="btn ghost">그래도 둘래요</button>
+    </div>
+  </dialog>
 
   <script type="module" src="app.js"></script>
 </body>

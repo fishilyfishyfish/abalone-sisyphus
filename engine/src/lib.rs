@@ -4,6 +4,7 @@ pub mod ai;
 pub mod assist;
 pub mod board;
 pub mod eval;
+pub mod explain;
 pub mod features;
 pub mod game;
 pub mod json;

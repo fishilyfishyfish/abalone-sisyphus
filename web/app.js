@@ -10,6 +10,9 @@ const DIRS = [[0, 1], [1, 1], [1, 0], [0, -1], [-1, -1], [-1, 0]];
 const ROWS = 'ABCDEFGHI';
 const AI_DELAY_MS = 600;
 const MOVE_MS = 280;
+const CANDIDATE_MS = 300; // 친절 모드: 두기 전에 수를 분석하는 시간
+const HINT_MS = 700;
+const REVIEW_MS = 250; // 복기: 수마다 분석 시간
 
 // 정규 칸 순서 (행 오름차순, 사선 오름차순) — 엔진의 CELLS와 같다
 const CELLS = [];
@@ -70,6 +73,10 @@ const ui = {
   gesture: null,
   dragging: false,
   wasOnlyThis: false,
+  mode: 'play', // 'play' | 'review'
+  grades: {}, // 기보 번호 → 내가 둔 수의 분석 (친절 모드)
+  hint: null, // 힌트로 보여줄 수
+  review: { cache: {}, cur: -1, token: 0, board: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -78,7 +85,11 @@ const KO = { black: '흑', white: '백' };
 const ownChar = () => (ui.state.side === 'black' ? 'b' : 'w');
 
 const isHumanTurn = () =>
-  ui.state && ui.state.outcome.status === 'ongoing' && (ui.human === 'both' || ui.state.side === ui.human);
+  ui.mode === 'play' &&
+  ui.state &&
+  ui.state.outcome.status === 'ongoing' &&
+  (ui.human === 'both' || ui.state.side === ui.human);
+const friendly = () => $('friendly').checked;
 
 function setState(res) {
   ui.state = res.state;
@@ -87,6 +98,11 @@ function setState(res) {
   ui.singles = res.singles || {};
   ui.selection = [];
   ui.options = null;
+  ui.hint = null;
+  // 무르기 등으로 기보가 짧아지면 그 뒤 분석은 버린다
+  const n = ui.state.history.length;
+  for (const k of Object.keys(ui.grades)) if (Number(k) >= n) delete ui.grades[k];
+  for (const k of Object.keys(ui.review.cache)) if (Number(k) >= n) delete ui.review.cache[k];
 }
 
 // ---------------------------------------------------------------- 판 그리기 (고정 요소)
@@ -138,6 +154,7 @@ function buildBoard() {
   layers.marks = el('g', {}, board);
   layers.glow = el('g', {}, board);
   layers.marbles = el('g', {}, board);
+  layers.notes = el('g', {}, board); // 힌트·복기 화살표
   layers.sel = el('g', {}, board);
   layers.hits = el('g', {}, board);
   layers.arrows = el('g', {}, board);
@@ -225,10 +242,40 @@ function svgPoint(e) {
 function render() {
   const st = ui.state;
   if (!st) return;
-  renderMarbles(st.board);
-  renderLast(st);
-  renderSelection();
+  if (ui.mode === 'review') {
+    renderReviewBoard();
+  } else {
+    renderMarbles(st.board);
+    renderLast(st);
+    renderNotes();
+    renderSelection();
+  }
   renderPanel(st);
+}
+
+/** 수 하나를 화살표로: 움직이는 구슬에 고리, 구슬들의 가운데에서 도착 칸 가운데로 화살표 */
+function drawMoveArrow(layer, m, cls) {
+  const [dr, dc] = DIRS[m.dir];
+  const from = m.cells.map((i) => px(CELLS[i].r, CELLS[i].c));
+  for (const [x, y] of from) el('circle', { cx: x, cy: y, r: R_MARBLE + 6, class: `mv-from ${cls}` }, layer);
+  const fx = from.reduce((a, p) => a + p[0], 0) / from.length;
+  const fy = from.reduce((a, p) => a + p[1], 0) / from.length;
+  const [ux, uy] = dirVec(m.dir);
+  const head = m.inline ? m.cells.find((i) => !m.cells.includes(step(i, m.dir))) : null;
+  let [sx, sy] = [fx, fy];
+  if (head !== null) [sx, sy] = px(CELLS[head].r, CELLS[head].c);
+  const len = S * 0.95;
+  const [tx, ty] = [sx + ux * len, sy + uy * len];
+  const g = el('g', { class: `mv-arrow ${cls}` }, layer);
+  el('line', { x1: sx, y1: sy, x2: tx - ux * 22, y2: ty - uy * 22 }, g);
+  const [nx, ny] = [-uy, ux];
+  el('polygon', { points: `${tx},${ty} ${tx - ux * 34 + nx * 22},${ty - uy * 34 + ny * 22} ${tx - ux * 34 - nx * 22},${ty - uy * 34 - ny * 22}` }, g);
+  void dr; void dc;
+}
+
+function renderNotes() {
+  layers.notes.replaceChildren();
+  if (ui.hint && isHumanTurn() && !ui.selection.length) drawMoveArrow(layers.notes, ui.hint, 'best');
 }
 
 function renderMarbles(boardStr) {
@@ -427,6 +474,13 @@ function renderPanel(st) {
       s.textContent = st.history[j] + (offs[j] ? '×' : '');
       if (offs[j]) s.classList.add('off');
       if (j === st.history.length - 1) s.classList.add('last');
+      const a = ui.grades[j];
+      if (a) {
+        const dot = document.createElement('i');
+        dot.className = `g grade ${a.grade}`;
+        dot.title = a.grade_ko;
+        s.appendChild(dot);
+      }
       li.appendChild(s);
     }
     list.appendChild(li);
@@ -435,6 +489,16 @@ function renderPanel(st) {
 
   $('undo').disabled = st.history.length === 0 || (ui.human !== 'both' && !st.history.some((_, j) => moverOf(j) === ui.human));
   $('clear').disabled = ui.selection.length === 0;
+  $('hint').hidden = !friendly();
+  $('hint').disabled = !isHumanTurn();
+  $('review-btn').disabled = st.history.length === 0;
+  $('review-btn').hidden = ui.mode === 'review';
+  $('play-only').hidden = ui.mode === 'review';
+  $('review').hidden = ui.mode !== 'review';
+  document.querySelector('.actions').hidden = ui.mode === 'review';
+  document.querySelector('.help').hidden = ui.mode === 'review';
+  $('engine').hidden = ui.mode === 'review';
+  if (ui.mode === 'review') $('feedback').hidden = true;
   renderFeatures();
 }
 
@@ -662,11 +726,36 @@ async function applyMove(res) {
 async function playHuman(m) {
   if (!isHumanTurn() || ui.busy) return;
   ui.busy = true;
+  let analysis = null;
   try {
+    if (friendly()) {
+      say('생각해 보는 중…');
+      analysis = (await call('analyzeCandidate', { text: m.text, ms: CANDIDATE_MS })).analysis;
+      // 큰 실수이거나, 최선 수보다 구슬을 잃는(덜 얻는) 수면 두기 전에 묻는다
+      if (analysis && (analysis.grade === 'blunder' || analysis.material_drop >= 1)) {
+        const choice = await confirmBlunder(analysis);
+        if (choice !== 'play') {
+          ui.busy = false;
+          ui.selection = [];
+          ui.options = null;
+          if (choice === 'hint') {
+            await showHint();
+          } else {
+            render();
+            say('좋아요, 다시 생각해 봐요.');
+          }
+          return;
+        }
+      }
+    }
+    const ply = ui.state.history.length;
     const res = await call('play', { text: m.text });
+    if (analysis) ui.grades[ply] = analysis;
+    showFeedback(analysis);
     await applyMove(res);
     if (m.push_off) say('밀어냈어요! 상대 구슬 하나가 판 밖으로 나갔어요.', 'good');
-    else idleMessage();
+    else if (!analysis) idleMessage();
+    render();
   } finally {
     ui.busy = false;
   }
@@ -674,6 +763,7 @@ async function playHuman(m) {
 }
 
 function maybeAi() {
+  if (ui.mode !== 'play') return;
   const st = ui.state;
   if (!st || st.outcome.status !== 'ongoing' || ui.human === 'both' || st.side === ui.human) {
     if (st && st.outcome.status !== 'ongoing') idleMessage();
@@ -689,7 +779,7 @@ function maybeAi() {
       const color = ui.state.side;
       const ply = ui.state.history.length;
       const r = await call('ai', { level: $('level').value });
-      if (token !== ui.aiToken || !r.move) return;
+      if (token !== ui.aiToken || !r.move || ui.mode !== 'play') return;
       ui.lastSearch = { color, ply, search: r.search };
       const pushedBefore = ui.state.pushed;
       const res = await call('play', { text: r.move });
@@ -708,6 +798,7 @@ function maybeAi() {
 
 async function undo() {
   ui.aiToken++; // 진행 중인 컴퓨터 수 취소
+  $('feedback').hidden = true;
   ui.busy = true;
   try {
     let res = await call('undo', { count: 1 });
@@ -728,6 +819,10 @@ async function newGame() {
   ui.aiToken++;
   ui.human = $('human').value;
   ui.lastSearch = null;
+  ui.grades = {};
+  ui.review = { cache: {}, cur: -1, token: ui.review.token + 1, board: null };
+  ui.mode = 'play';
+  $('feedback').hidden = true;
   const limit = Math.max(0, Math.min(2000, parseInt($('limit').value, 10) || 0));
   $('limit').value = limit;
   ui.busy = true;
@@ -743,11 +838,224 @@ async function newGame() {
   maybeAi();
 }
 
+// ---------------------------------------------------------------- 친절 모드: 피드백, 경고, 힌트
+
+function fillList(ul, sentences) {
+  ul.replaceChildren();
+  for (const t of sentences) {
+    const li = document.createElement('li');
+    li.textContent = t;
+    ul.appendChild(li);
+  }
+}
+
+function showFeedback(a) {
+  const box = $('feedback');
+  if (!a) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const g = $('fb-grade');
+  g.className = `grade ${a.grade}`;
+  g.textContent = a.grade_ko;
+  fillList($('fb-sentences'), a.sentences);
+  const kind = a.grade === 'best' || a.grade === 'good' ? 'good' : a.grade === 'inaccuracy' ? 'info' : 'warn';
+  say(a.sentences[0], kind);
+}
+
+function confirmBlunder(a) {
+  const dlg = $('warn');
+  $('warn-grade').textContent =
+    a.material_drop >= 1 && a.grade !== 'blunder'
+      ? `이 수로는 구슬을 ${a.material_drop}개 손해 볼 수 있어요.`
+      : `이 수는 ${a.grade_ko}일 수 있어요.`;
+  fillList($('warn-sentences'), a.sentences.slice(1).length ? a.sentences.slice(1) : a.sentences);
+  return new Promise((resolve) => {
+    const done = (v) => {
+      dlg.close();
+      resolve(v);
+    };
+    $('warn-cancel').onclick = () => done('cancel');
+    $('warn-play').onclick = () => done('play');
+    $('warn-hint').onclick = () => done('hint');
+    dlg.oncancel = (e) => {
+      e.preventDefault();
+      done('cancel');
+    };
+    dlg.showModal();
+  });
+}
+
+async function showHint() {
+  if (!isHumanTurn() || ui.busy) return;
+  ui.busy = true;
+  try {
+    say('좋은 수를 찾는 중…');
+    const h = (await call('hint', { ms: HINT_MS })).hint;
+    if (!h) return;
+    ui.hint = h.best.move;
+    ui.selection = [];
+    ui.options = null;
+    say(h.sentences.join(' '), 'good');
+  } finally {
+    ui.busy = false;
+    render();
+  }
+}
+
+// ---------------------------------------------------------------- 복기
+
+const GRADE_SHORT = { best: '최선', good: '좋음', inaccuracy: '아쉬움', mistake: '실수', blunder: '큰 실수' };
+
+async function enterReview() {
+  if (!ui.state || !ui.state.history.length) return;
+  ui.aiToken++; // 진행 중인 컴퓨터 수 취소
+  ui.mode = 'review';
+  ui.selection = [];
+  ui.options = null;
+  const token = ++ui.review.token;
+  const n = ui.state.history.length;
+  renderReviewList();
+  await selectReview(ui.review.cur >= 0 && ui.review.cur < n ? ui.review.cur : 0);
+  // 아직 분석하지 않은 수를 차례로 분석한다
+  for (let k = 0; k < n; k++) {
+    if (token !== ui.review.token) return;
+    if (!ui.review.cache[k]) {
+      $('rv-progress').textContent = `분석 중 ${k + 1} / ${n}`;
+      const a = (await call('analyzePly', { ply: k, ms: REVIEW_MS })).analysis;
+      if (token !== ui.review.token) return;
+      if (a) ui.review.cache[k] = a;
+      renderReviewList();
+      if (k === ui.review.cur) renderReviewDetail();
+    }
+  }
+  $('rv-progress').textContent = summaryText();
+}
+
+function summaryText() {
+  const counts = {};
+  for (const a of Object.values(ui.review.cache)) {
+    const who = a.mover === 'black' ? '흑' : '백';
+    const key = `${who} ${GRADE_SHORT[a.grade]}`;
+    if (a.grade === 'mistake' || a.grade === 'blunder') counts[key] = (counts[key] || 0) + 1;
+  }
+  const parts = Object.entries(counts).map(([k, v]) => `${k} ${v}`);
+  return parts.length ? `분석 끝 · ${parts.join(', ')}` : '분석 끝 · 실수 없음';
+}
+
+function exitReview() {
+  ui.review.token++;
+  ui.mode = 'play';
+  render();
+  idleMessage();
+  maybeAi();
+}
+
+function renderReviewList() {
+  const list = $('rv-list');
+  list.replaceChildren();
+  const hist = ui.state.history;
+  hist.forEach((t, k) => {
+    const li = document.createElement('li');
+    if (k === ui.review.cur) li.classList.add('cur');
+    const no = document.createElement('span');
+    no.className = 'no';
+    no.textContent = `${k + 1}.`;
+    const who = document.createElement('i');
+    who.className = `dot ${moverOf(k)}`;
+    const mv = document.createElement('span');
+    mv.textContent = t;
+    li.append(no, who, mv);
+    const a = ui.review.cache[k];
+    const tag = document.createElement('span');
+    if (a) {
+      tag.className = `grade ${a.grade}`;
+      tag.textContent = GRADE_SHORT[a.grade];
+    } else {
+      tag.className = 'pending';
+      tag.textContent = '분석 대기';
+    }
+    li.appendChild(tag);
+    li.addEventListener('click', () => selectReview(k));
+    list.appendChild(li);
+  });
+  const cur = list.children[ui.review.cur];
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+}
+
+async function selectReview(k) {
+  const n = ui.state.history.length;
+  if (k < 0 || k >= n) return;
+  ui.review.cur = k;
+  const st = (await call('stateAt', { ply: k })).state;
+  if (ui.review.cur !== k) return;
+  ui.review.board = st;
+  renderReviewList();
+  renderReviewDetail();
+  render();
+}
+
+function renderReviewBoard() {
+  const st = ui.review.board;
+  layers.marks.replaceChildren();
+  layers.notes.replaceChildren();
+  layers.sel.replaceChildren();
+  layers.arrows.replaceChildren();
+  layers.glow.replaceChildren();
+  if (!st) return;
+  renderMarbles(st.board);
+  const a = ui.review.cache[ui.review.cur];
+  if (a) {
+    if (a.best.move.text !== a.played.move.text) drawMoveArrow(layers.notes, a.best.move, 'best');
+    drawMoveArrow(layers.notes, a.played.move, 'played');
+  }
+}
+
+function renderReviewDetail() {
+  const k = ui.review.cur;
+  const a = ui.review.cache[k];
+  const who = KO[moverOf(k)];
+  const text = ui.state.history[k];
+  if (!a) {
+    fillList($('rv-sentences'), [`${k + 1}. ${who} ${text} — 분석하는 중이에요…`]);
+    $('rv-engine').textContent = '';
+    say(`${k + 1}번째 수: ${who} ${text}`);
+    return;
+  }
+  fillList($('rv-sentences'), a.sentences);
+  const same = a.best.move.text === a.played.move.text;
+  say(`${k + 1}. ${who} ${text} · ${a.grade_ko}` + (same ? '' : ` (주황 = 둔 수, 초록 = 최선 수 ${a.best.move.text})`), a.grade === 'mistake' || a.grade === 'blunder' ? 'warn' : 'info');
+  const rows = a.contributions
+    ? Object.entries(a.contributions)
+        .filter(([, v]) => v !== 0)
+        .sort((x, y) => y[1] - x[1])
+        .map(([key, v]) => `<tr><td>${FEATURE_LABELS[key] || key}</td><td>${signed(v)}</td></tr>`)
+        .join('')
+    : '';
+  $('rv-engine').innerHTML =
+    `<div>등급 ${a.grade_ko} · 손실 ${a.loss}점 · 탐색 깊이 ${a.depth}</div>` +
+    `<div>평가(흑 기준): 둔 수 ${signed(a.played.score_black)} / 최선 수 ${signed(a.best.score_black)}</div>` +
+    `<div>둔 수 수순: <span class="pv">${a.played.pv.join(' ')}</span></div>` +
+    (same ? '' : `<div>최선 수순: <span class="pv">${a.best.pv.join(' ')}</span></div>`) +
+    (rows ? `<div>기여도 차이 (최선 − 둔 수, ${who} 기준. 합 = 손실)</div><table>${rows}</table>` : '');
+}
+
 $('setup').addEventListener('submit', (e) => {
   e.preventDefault();
   newGame();
 });
 $('undo').addEventListener('click', undo);
+$('hint').addEventListener('click', showHint);
+$('review-btn').addEventListener('click', enterReview);
+$('rv-exit').addEventListener('click', exitReview);
+$('rv-prev').addEventListener('click', () => selectReview(ui.review.cur - 1));
+$('rv-next').addEventListener('click', () => selectReview(ui.review.cur + 1));
+$('friendly').addEventListener('change', () => {
+  if (!friendly()) $('feedback').hidden = true;
+  ui.hint = null;
+  render();
+});
 $('level').addEventListener('change', () => ui.state && renderPanel(ui.state)); // 다음 컴퓨터 수부터 적용
 $('clear').addEventListener('click', () => select([]));
 document.addEventListener('keydown', (e) => {

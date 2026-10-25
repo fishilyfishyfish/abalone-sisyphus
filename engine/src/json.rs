@@ -3,6 +3,7 @@
 use crate::assist::{self, Blocked, DirOption};
 use crate::board::*;
 use crate::eval::{self, Weights};
+use crate::explain::{Hint, Line, MoveAnalysis};
 use crate::features::{Features, SideFeatures, FEATURE_NAMES};
 use crate::game::{Game, Outcome};
 use crate::notation::move_to_string;
@@ -217,5 +218,85 @@ pub fn eval_json(pos: &Position, w: &Weights) -> String {
         c.iter().sum::<i32>(),
         field(&w.0),
         field(&c)
+    )
+}
+
+fn line_json(root: &Position, l: &Line, mover: Color) -> String {
+    let pv: Vec<String> =
+        l.pv.iter()
+            .map(|&m| format!("\"{}\"", move_to_string(m)))
+            .collect();
+    let black = if mover == Color::Black {
+        l.score
+    } else {
+        -l.score
+    };
+    format!(
+        "{{\"move\":{},\"score\":{},\"score_black\":{},\"pv\":[{}]}}",
+        move_json(root, l.first),
+        l.score,
+        black,
+        pv.join(",")
+    )
+}
+
+fn sentences_json(v: &[String]) -> String {
+    let s: Vec<String> = v
+        .iter()
+        .map(|x| format!("\"{}\"", x.replace('"', "'")))
+        .collect();
+    format!("[{}]", s.join(","))
+}
+
+fn reasons_json(rs: &[crate::explain::Reason]) -> String {
+    let v: Vec<String> = rs
+        .iter()
+        .map(|r| {
+            format!(
+                "{{\"key\":\"{}\",\"delta\":{},\"mine_side\":{},\"played\":{},\"best\":{}}}",
+                r.key, r.delta, r.mine_side, r.played_value, r.best_value
+            )
+        })
+        .collect();
+    format!("[{}]", v.join(","))
+}
+
+/// 수 분석. 점수는 수 두는 쪽 관점(score)과 흑 관점(score_black).
+pub fn analysis_json(root: &Position, a: &MoveAnalysis) -> String {
+    let contrib = match a.contributions {
+        Some(c) => {
+            let v: Vec<String> = FEATURE_NAMES
+                .iter()
+                .zip(c)
+                .map(|(n, v)| format!("\"{n}\":{v}"))
+                .collect();
+            format!("{{{}}}", v.join(","))
+        }
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"mover\":\"{}\",\"grade\":\"{}\",\"grade_ko\":\"{}\",\"loss\":{},\"depth\":{},\
+         \"best\":{},\"played\":{},\"contributions\":{},\"reasons\":{},\"sentences\":{},\"material_drop\":{}}}",
+        color_name(a.mover),
+        a.grade.code(),
+        a.grade.korean(),
+        a.loss,
+        a.depth,
+        line_json(root, &a.best, a.mover),
+        line_json(root, &a.played, a.mover),
+        contrib,
+        reasons_json(&a.reasons),
+        sentences_json(&a.sentences),
+        a.material_drop
+    )
+}
+
+pub fn hint_json(root: &Position, h: &Hint) -> String {
+    format!(
+        "{{\"depth\":{},\"best\":{},\"reasons\":{},\"sentences\":{}}}",
+        h.depth,
+        line_json(root, &h.best, root.side),
+        reasons_json(&h.reasons),
+        sentences_json(&h.sentences)
     )
 }

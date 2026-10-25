@@ -4,12 +4,14 @@ use wasm_bindgen::prelude::*;
 
 use crate::ai::{self, Level};
 use crate::eval::DEFAULT_WEIGHTS;
+use crate::explain;
 use crate::features;
 use crate::game::{Game, GameConfig};
 use crate::json;
 use crate::layouts::Layout;
 use crate::notation::{move_to_string, parse_move};
 use crate::rng::Rng;
+use crate::search::Limits;
 use crate::search::Searcher;
 
 #[wasm_bindgen]
@@ -101,5 +103,50 @@ impl WasmGame {
                 ))
             ),
         }
+    }
+
+    /// 처음 ply수까지 둔 국면의 상태 (복기에서 그 수 직전 국면을 보여줄 때).
+    pub fn state_at(&self, ply: u32) -> String {
+        json::state_json(&self.game.prefix(ply as usize))
+    }
+
+    /// 기보 ply번째 수(0부터)를 분석한다. 없으면 "null".
+    pub fn analyze_ply(&mut self, ply: u32, time_ms: f64) -> String {
+        let ply = ply as usize;
+        let Some(&(m, _)) = self.game.history.get(ply) else {
+            return "null".to_string();
+        };
+        let before = self.game.prefix(ply);
+        match explain::analyze(&before, m, &mut self.searcher, timed(time_ms)) {
+            Some(a) => json::analysis_json(&before.pos, &a),
+            None => "null".to_string(),
+        }
+    }
+
+    /// 지금 국면에서 아직 두지 않은 수를 분석한다 (큰 실수 경고용).
+    pub fn analyze_candidate(&mut self, text: &str, time_ms: f64) -> String {
+        let Some(m) = parse_move(&self.game.pos, text) else {
+            return "null".to_string();
+        };
+        match explain::analyze(&self.game, m, &mut self.searcher, timed(time_ms)) {
+            Some(a) => json::analysis_json(&self.game.pos, &a),
+            None => "null".to_string(),
+        }
+    }
+
+    /// 힌트: 지금 국면의 최선 수와 좋아지는 점.
+    pub fn hint(&mut self, time_ms: f64) -> String {
+        match explain::hint(&self.game, &mut self.searcher, timed(time_ms)) {
+            Some(h) => json::hint_json(&self.game.pos, &h),
+            None => "null".to_string(),
+        }
+    }
+}
+
+fn timed(ms: f64) -> Limits {
+    Limits {
+        max_depth: 64,
+        time_ms: ms,
+        exact_root: false,
     }
 }

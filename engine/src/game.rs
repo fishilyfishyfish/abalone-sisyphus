@@ -130,6 +130,15 @@ impl Game {
         &self.hashes
     }
 
+    /// 처음 n수만 다시 둔 대국 (복기용). n이 기보보다 길면 전체.
+    pub fn prefix(&self, n: usize) -> Game {
+        let mut g = Game::from_position(self.start, self.config);
+        for &(m, _) in self.history.iter().take(n) {
+            g.play_unchecked(m);
+        }
+        g
+    }
+
     pub fn repetition_count(&self) -> u32 {
         let h = self.pos.hash;
         self.hashes.iter().filter(|&&x| x == h).count() as u32
