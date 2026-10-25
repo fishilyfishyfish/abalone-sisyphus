@@ -33,6 +33,13 @@
           <option value="hard">어려움</option>
         </select>
       </label>
+      <label>조작
+        <select id="control">
+          <option value="swipe" selected>쓸고 화살표 누르기</option>
+          <option value="tap">하나씩 누르고 칸 누르기</option>
+          <option value="drag">골라서 끌기</option>
+        </select>
+      </label>
       <label class="check"><input id="friendly" type="checkbox" checked> 친절 모드</label>
       <label>수 제한
         <input id="limit" type="number" min="0" max="2000" step="1" value="200" inputmode="numeric">
@@ -84,13 +91,7 @@
 
       <details class="help">
         <summary>어떻게 해요?</summary>
-        <ul>
-          <li>움직일 내 구슬을 손가락(마우스)으로 쓱 쓸어서 골라요. 한 줄로 붙은 구슬을 3개까지 고를 수 있어요.</li>
-          <li>하나만 움직이려면 그 구슬을 톡 눌러요. 다시 누르면 선택이 풀려요.</li>
-          <li>손을 떼면 갈 수 있는 쪽에 큰 화살표가 나와요. 화살표를 누르면 고른 구슬이 같이 움직여요.</li>
-          <li>상대 구슬보다 내 구슬이 더 많으면 줄 방향으로 밀 수 있어요. 판 밖으로 6개 밀어내면 이겨요.</li>
-          <li>작은 회색 화살표를 누르면 왜 못 가는지 알려 줘요.</li>
-        </ul>
+        <ul id="help-list"></ul>
       </details>
 
       <details class="stats" id="stats">
