@@ -10,6 +10,7 @@ use crate::game::{Game, GameConfig};
 use crate::json;
 use crate::layouts::Layout;
 use crate::notation::{move_to_string, parse_move};
+use crate::record;
 use crate::rng::Rng;
 use crate::search::Limits;
 use crate::search::Searcher;
@@ -132,6 +133,24 @@ impl WasmGame {
             Some(a) => json::analysis_json(&self.game.pos, &a),
             None => "null".to_string(),
         }
+    }
+
+    /// 지금 대국의 기보 텍스트. 빈 문자열인 태그는 뺀다.
+    pub fn export_record(&self, black: &str, white: &str, date: &str) -> String {
+        record::export(
+            &self.game,
+            &[("Date", date), ("Black", black), ("White", white)],
+        )
+    }
+
+    /// 기보 텍스트를 읽어 지금 대국을 바꾼다. 실패하면 대국은 그대로다. 결과는 `json::record_result_json`.
+    pub fn load_record(&mut self, text: &str) -> String {
+        let r = record::import(text);
+        if let Ok(rec) = &r {
+            self.game = rec.game.clone();
+            self.searcher.clear();
+        }
+        json::record_result_json(&r)
     }
 
     /// 힌트: 지금 국면의 최선 수와 좋아지는 점.

@@ -10,6 +10,7 @@ pub mod game;
 pub mod json;
 pub mod layouts;
 pub mod notation;
+pub mod record;
 pub mod rng;
 pub mod search;
 

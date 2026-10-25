@@ -77,6 +77,8 @@ const ui = {
   grades: {}, // 기보 번호 → 내가 둔 수의 분석 (친절 모드)
   hint: null, // 힌트로 보여줄 수
   review: { cache: {}, cur: -1, token: 0, board: null },
+  loadedTags: null, // 불러온 기보의 태그 ([[이름, 값], ...]). 저장할 때 이름·날짜를 그대로 쓴다
+  counted: false, // 이 대국 결과를 내 기록에 넣었는지 (불러온 대국은 넣지 않는다)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -492,6 +494,8 @@ function renderPanel(st) {
   $('hint').hidden = !friendly();
   $('hint').disabled = !isHumanTurn();
   $('review-btn').disabled = st.history.length === 0;
+  $('record-btn').hidden = ui.mode === 'review';
+  $('stats').hidden = ui.mode === 'review';
   $('review-btn').hidden = ui.mode === 'review';
   $('play-only').hidden = ui.mode === 'review';
   $('review').hidden = ui.mode !== 'review';
@@ -717,6 +721,7 @@ function animateLast(prevBoard, st) {
 async function applyMove(res) {
   const prev = ui.state.board;
   setState(res);
+  noteResult();
   if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     await animateLast(prev, res.state);
   }
@@ -823,6 +828,8 @@ async function newGame() {
   ui.grades = {};
   ui.review = { cache: {}, cur: -1, token: ui.review.token + 1, board: null };
   ui.mode = 'play';
+  ui.loadedTags = null;
+  ui.counted = false;
   $('feedback').hidden = true;
   const limit = Math.max(0, Math.min(2000, parseInt($('limit').value, 10) || 0));
   $('limit').value = limit;
@@ -1042,6 +1049,229 @@ function renderReviewDetail() {
     (rows ? `<div>기여도 차이 (최선 − 둔 수, ${who} 기준. 합 = 손실)</div><table>${rows}</table>` : '');
 }
 
+// ---------------------------------------------------------------- 기보 (6단계)
+
+const LAYOUT_KO = { belgian: '벨지안 데이지', standard: '표준', german: '저먼 데이지' };
+const LEVEL_KO = { random: '아주 쉬움', easy: '쉬움', normal: '보통', hard: '어려움' };
+
+const RECORD_ERR = {
+  unknown_layout: (r) => `배치 이름 "${r.value}"을 모르겠어요. belgian, standard, german 중 하나로 적어 주세요.`,
+  bad_move_limit: (r) => `수 제한 "${r.value}"이 숫자가 아니에요.`,
+  bad_token: (r) => `${r.index + 1}번째 수 "${r.token}"를 칸 이름으로 읽을 수 없어요.`,
+  illegal: (r) => `${r.index + 1}번째 수 "${r.token}"는 그 자리에서 둘 수 없는 수예요.`,
+  ambiguous: (r) => `${r.index + 1}번째 수 "${r.token}"는 두 가지 이상으로 읽혀서 정할 수 없어요.`,
+  after_end: (r) => `${r.index}수 만에 대국이 끝났는데 뒤에 수("${r.token}")가 더 있어요.`,
+  empty: () => '기보에 수가 없어요.',
+};
+
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const playerName = (color) => (ui.human === 'both' || ui.human === color ? '사람' : `컴퓨터(${LEVEL_KO[$('level').value]})`);
+
+function setRecordMsg(text, kind = '') {
+  const p = $('record-msg');
+  p.textContent = text;
+  p.className = `record-msg ${kind}`;
+}
+
+async function openRecord() {
+  const tag = (k) => {
+    const t = ui.loadedTags && ui.loadedTags.find(([n]) => n.toLowerCase() === k.toLowerCase());
+    return t ? t[1] : undefined;
+  };
+  const r = await call('exportRecord', {
+    black: tag('Black') ?? playerName('black'),
+    white: tag('White') ?? playerName('white'),
+    date: tag('Date') ?? today(),
+  });
+  $('record-text').value = r.text;
+  setRecordMsg('');
+  $('record').showModal();
+}
+
+async function loadRecord() {
+  ui.aiToken++; // 진행 중인 컴퓨터 수 취소
+  ui.busy = true;
+  let res;
+  try {
+    res = await call('loadRecord', { text: $('record-text').value });
+  } finally {
+    ui.busy = false;
+  }
+  const r = res.result;
+  if (!r.ok) {
+    setRecordMsg(RECORD_ERR[r.error] ? RECORD_ERR[r.error](r) : r.error, 'warn');
+    maybeAi(); // 대국은 그대로다
+    return;
+  }
+  ui.loadedTags = r.tags;
+  ui.counted = true;
+  ui.lastSearch = null;
+  ui.grades = {};
+  ui.review = { cache: {}, cur: -1, token: ui.review.token + 1, board: null };
+  ui.mode = 'play';
+  $('feedback').hidden = true;
+  $('layout').value = res.state.layout;
+  $('limit').value = res.state.move_limit;
+  setState(res);
+  render();
+  $('record').close();
+  maybeAi();
+  const conv = r.converted ? ` 다른 표기로 적힌 수 ${r.converted}개는 이 사이트 표기로 바꿨어요.` : '';
+  say(
+    res.state.outcome.status === 'ongoing'
+      ? `기보를 불러왔어요(${r.plies}수). 이어서 둘 수 있어요.${conv}`
+      : `기보를 불러왔어요(${r.plies}수, 끝난 대국). "복기하기"를 누르면 수마다 설명을 볼 수 있어요.${conv}`,
+    'good',
+  );
+}
+
+function saveRecordFile() {
+  const blob = new Blob([$('record-text').value], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `abalone-${today()}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setRecordMsg('파일로 저장했어요.', 'good');
+}
+
+async function copyRecord() {
+  try {
+    await navigator.clipboard.writeText($('record-text').value);
+    setRecordMsg('복사했어요.', 'good');
+  } catch {
+    $('record-text').select();
+    setRecordMsg('자동 복사가 막혀 있어요. 선택된 글자를 직접 복사해 주세요.', 'warn');
+  }
+}
+
+// ---------------------------------------------------------------- 배치별 승률 (6단계)
+
+const MY_KEY = 'abalone.myStats.v1';
+const readMine = () => {
+  try {
+    return JSON.parse(localStorage.getItem(MY_KEY)) || {};
+  } catch {
+    return {};
+  }
+};
+const writeMine = (m) => {
+  try {
+    localStorage.setItem(MY_KEY, JSON.stringify(m));
+  } catch {
+    // 저장이 막힌 브라우저(사생활 보호 창 등)에서는 기록하지 않는다
+  }
+};
+
+// 컴퓨터와 둔 대국이 끝나면 한 번만 내 기록에 넣는다. 끝난 뒤 무르고 다시 둬도 처음 결과만 남는다.
+function noteResult() {
+  const st = ui.state;
+  if (ui.counted || ui.human === 'both' || st.outcome.status === 'ongoing') return;
+  ui.counted = true;
+  const key = `${st.layout}|${$('level').value}`;
+  const m = readMine();
+  const e = m[key] || { w: 0, d: 0, l: 0 };
+  if (st.outcome.status === 'draw') e.d++;
+  else if (st.outcome.winner === ui.human) e.w++;
+  else e.l++;
+  m[key] = e;
+  writeMine(m);
+  renderMine();
+}
+
+function renderMine() {
+  const box = $('stats-mine');
+  const m = readMine();
+  const keys = Object.keys(m).filter((k) => m[k].w + m[k].d + m[k].l > 0);
+  const order = (k) => {
+    const [l, v] = k.split('|');
+    return Object.keys(LAYOUT_KO).indexOf(l) * 10 + Object.keys(LEVEL_KO).indexOf(v);
+  };
+  keys.sort((a, b) => order(a) - order(b));
+  $('stats-reset').hidden = keys.length === 0;
+  if (!keys.length) {
+    box.innerHTML = '<p class="muted">아직 컴퓨터와 끝까지 둔 대국이 없어요.</p>';
+    return;
+  }
+  const rows = keys.map((k) => {
+    const [l, v] = k.split('|');
+    const e = m[k];
+    const n = e.w + e.d + e.l;
+    return `<tr><td>${LAYOUT_KO[l] || l}</td><td>${LEVEL_KO[v] || v}</td><td>${e.w}</td><td>${e.d}</td><td>${e.l}</td><td>${Math.round(((e.w + e.d / 2) / n) * 100)}%</td></tr>`;
+  });
+  box.innerHTML = `<table><tr><th>배치</th><th>컴퓨터</th><th>승</th><th>무</th><th>패</th><th>승률</th></tr>${rows.join('')}</table>`;
+}
+
+// 흑 점수율의 95% 구간이 50%를 벗어날 때만 "유리해 보여요"라고 말한다
+function advantageText(t) {
+  const n = t.black + t.draw + t.white;
+  const s = (t.black + t.draw / 2) / n;
+  const se = Math.max(Math.sqrt((s * (1 - s)) / n), 0.5 / n);
+  if (s - 1.96 * se > 0.5) return '먼저 두는 흑이 유리해 보여요';
+  if (s + 1.96 * se < 0.5) return '나중에 두는 백이 유리해 보여요';
+  return '흑백 차이가 뚜렷하지 않아요';
+}
+
+async function renderEngineStats() {
+  let data;
+  try {
+    const r = await fetch('data/layout_stats.json');
+    if (!r.ok) throw new Error(r.status);
+    data = await r.json();
+  } catch {
+    $('stats-note').textContent = '통계 파일을 불러오지 못했어요.';
+    return;
+  }
+  $('stats-note').textContent = data.note;
+  const pct = (x, n) => Math.round((x / n) * 100);
+  const box = $('stats-engine');
+  box.replaceChildren();
+  for (const run of data.runs) {
+    const h = document.createElement('p');
+    h.className = 'st-sub';
+    h.textContent = run.label;
+    box.appendChild(h);
+    for (const [layout, t] of Object.entries(run.layouts)) {
+      const n = t.games;
+      const [b, d, w] = [pct(t.black, n), pct(t.draw, n), pct(t.white, n)];
+      const off = t.ends.pushed_off || 0;
+      const row = document.createElement('div');
+      row.className = 'st-row';
+      row.innerHTML =
+        `<div class="st-head"><b>${LAYOUT_KO[layout]}</b><span>${n}판</span></div>` +
+        `<div class="st-bar" role="img" aria-label="흑 승 ${b}%, 무승부 ${d}%, 백 승 ${w}%">` +
+        `<span class="b" style="flex:${t.black}">${b >= 12 ? `흑 ${b}%` : ''}</span>` +
+        `<span class="d" style="flex:${t.draw}">${d >= 12 ? `무 ${d}%` : ''}</span>` +
+        `<span class="w" style="flex:${t.white}">${w >= 12 ? `백 ${w}%` : ''}</span></div>` +
+        `<div class="st-sub">흑 ${t.black}승 · 무 ${t.draw} · 백 ${t.white}승 · ${advantageText(t)} · 평균 ${t.avg_plies}수 · 6개 밀어내기로 끝난 판 ${pct(off, n)}%</div>`;
+      box.appendChild(row);
+    }
+  }
+}
+
+$('record-btn').addEventListener('click', openRecord);
+$('record-close').addEventListener('click', () => $('record').close());
+$('record-save').addEventListener('click', saveRecordFile);
+$('record-copy').addEventListener('click', copyRecord);
+$('record-load').addEventListener('click', loadRecord);
+$('record-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  $('record-text').value = await f.text();
+  await loadRecord();
+});
+$('stats-reset').addEventListener('click', () => {
+  if (!confirm('이 기기에 저장된 내 기록을 모두 지울까요?')) return;
+  writeMine({});
+  renderMine();
+});
+
 $('setup').addEventListener('submit', (e) => {
   e.preventDefault();
   newGame();
@@ -1064,4 +1294,6 @@ document.addEventListener('keydown', (e) => {
 });
 
 buildBoard();
+renderMine();
+renderEngineStats();
 newGame();

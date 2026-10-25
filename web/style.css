@@ -345,3 +345,27 @@ input[type="number"] { width: 6em; }
 .warn-actions .btn { flex: 1 1 140px; }
 .moves .g.grade { padding: 0; width: 10px; height: 10px; }
 .actions .btn { padding: 0 8px; white-space: nowrap; }
+
+/* 6단계: 기보, 배치별 승률 */
+.record { width: min(92vw, 560px); }
+.record h2 { color: var(--fg); }
+.record textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9rem; line-height: 1.5; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); resize: vertical; }
+.record-msg { min-height: 1.5em; margin: 6px 0 0; font-weight: 600; }
+.record-msg.warn { color: var(--danger); }
+.record-msg.good { color: #2e9e5b; }
+.btn.file { display: inline-flex; align-items: center; justify-content: center; }
+.stats summary { cursor: pointer; font-weight: 600; min-height: 36px; display: flex; align-items: center; }
+.stats h3 { font-size: 0.95rem; margin: 10px 0 4px; }
+.stats .muted { margin: 0 0 6px; line-height: 1.5; }
+.st-row { margin: 8px 0; }
+.st-head { display: flex; justify-content: space-between; font-size: 0.9rem; gap: 8px; }
+.st-bar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); margin-top: 3px; }
+.st-bar span { display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; min-width: 0; overflow: hidden; white-space: nowrap; }
+.st-bar .b { background: #26262a; color: #fff; }
+.st-bar .d { background: #b9b2a3; color: #222; }
+.st-bar .w { background: #f4f0e6; color: #222; }
+.st-sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+.stats table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.stats th, .stats td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+.stats th:first-child, .stats td:first-child, .stats th:nth-child(2), .stats td:nth-child(2) { text-align: left; }
+.stats .btn { margin-top: 8px; min-height: 40px; }

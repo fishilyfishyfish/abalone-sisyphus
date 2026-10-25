@@ -7,6 +7,7 @@ use crate::explain::{Hint, Line, MoveAnalysis};
 use crate::features::{Features, SideFeatures, FEATURE_NAMES};
 use crate::game::{Game, Outcome};
 use crate::notation::move_to_string;
+use crate::record::{Record, RecordError};
 use crate::search::SearchResult;
 
 pub fn color_name(c: Color) -> &'static str {
@@ -300,4 +301,57 @@ pub fn hint_json(root: &Position, h: &Hint) -> String {
         reasons_json(&h.reasons),
         sentences_json(&h.sentences)
     )
+}
+
+/// JSON 문자열 리터럴 (따옴표 포함).
+pub fn string_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// 기보 읽기 결과. 성공: {"ok":true,"tags":[[이름,값],...],"converted":n,"plies":n}
+/// 실패: {"ok":false,"error":코드,"index":몇 번째 수 또는 null,"token":표기 또는 null,"value":태그 값 또는 null}
+pub fn record_result_json(r: &Result<Record, RecordError>) -> String {
+    match r {
+        Ok(rec) => {
+            let tags: Vec<String> = rec
+                .tags
+                .iter()
+                .map(|(k, v)| format!("[{},{}]", string_json(k), string_json(v)))
+                .collect();
+            format!(
+                "{{\"ok\":true,\"tags\":[{}],\"converted\":{},\"plies\":{}}}",
+                tags.join(","),
+                rec.converted,
+                rec.game.ply()
+            )
+        }
+        Err(e) => {
+            let (index, token) = match e.at() {
+                Some((i, t)) => (i.to_string(), string_json(t)),
+                None => ("null".to_string(), "null".to_string()),
+            };
+            let value = match e {
+                RecordError::UnknownLayout(v) | RecordError::BadMoveLimit(v) => string_json(v),
+                _ => "null".to_string(),
+            };
+            format!(
+                "{{\"ok\":false,\"error\":\"{}\",\"index\":{index},\"token\":{token},\"value\":{value}}}",
+                e.code()
+            )
+        }
+    }
 }

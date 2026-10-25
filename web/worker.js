@@ -1,5 +1,5 @@
 // 엔진(WASM)을 메인 스레드와 분리해서 돌리는 웹 워커.
-// 요청: { id, cmd, ...args } → 응답: { id, ok, state, legal, features, singles, evaluation, move?, search?, options?, analysis?, hint?, error? }
+// 요청: { id, cmd, ...args } → 응답: { id, ok, state, legal, features, singles, evaluation, move?, search?, options?, analysis?, hint?, text?, result?, error? }
 import init, { WasmGame } from './pkg/abalone_engine.js';
 
 let game = null;
@@ -46,6 +46,13 @@ const handlers = {
   },
   analyzeCandidate({ text, ms }) {
     return { ok: true, analysis: JSON.parse(game.analyze_candidate(text, ms)) };
+  },
+  exportRecord({ black, white, date }) {
+    return { ok: true, text: game.export_record(black, white, date) };
+  },
+  loadRecord({ text }) {
+    const result = JSON.parse(game.load_record(text));
+    return { ...snapshot(), result };
   },
   hint({ ms }) {
     return { ok: true, hint: JSON.parse(game.hint(ms)) };
