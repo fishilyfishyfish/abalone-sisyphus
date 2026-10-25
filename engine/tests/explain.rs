@@ -80,12 +80,21 @@ fn contributions_sum_to_loss_and_scores_match_pv_ends() {
             a.sentences.len() > a.reasons.len(),
             "one header plus one sentence per reason"
         );
-        // 등급과 손실의 관계 (구슬 차이 보정이 없을 때)
-        let material = |l: &explain::Line| l.mine.pushed_off - l.theirs.pushed_off;
-        if material(&a.best) != material(&a.played) {
-            assert!(a.grade >= Grade::Mistake);
-            continue;
+        // 대가(둔 수가 더 나은 특징): 양수, 구슬 자체는 아님, 최대 2개
+        assert!(a.compensations.len() <= 2);
+        assert!(a
+            .compensations
+            .iter()
+            .all(|r| r.delta > 0 && r.key != "pushed_off"));
+        // 구슬을 내주는 수에 대가가 있으면 그 문장이 붙는다
+        if a.material_diff >= 1 && !a.compensations.is_empty() {
+            assert!(
+                a.sentences.iter().any(|t| t.contains("내주지만 그 대신")),
+                "{:?}",
+                a.sentences
+            );
         }
+        // 등급은 손실로만 정한다
         match a.grade {
             Grade::Best => {}
             Grade::Good if a.contributions.is_some() => assert!(a.loss < explain::GOOD_BELOW),
@@ -169,7 +178,9 @@ fn hanging_a_marble_is_explained_by_the_threat_or_the_lost_marble() {
         })
         .unwrap();
     let a = explain::analyze(&g, played, &mut s, Limits::depth(4)).unwrap();
-    assert!(a.grade >= Grade::Mistake, "{:?} loss {}", a.grade, a.loss);
+    // 등급은 엔진 손실로 정한다(이 국면에서 엔진은 구슬 손해를 흑 진형으로 일부 메운다고 본다)
+    assert!(a.grade > Grade::Good, "{:?} loss {}", a.grade, a.loss);
+    assert_eq!(a.material_diff, 1);
     let keys: Vec<&str> = a.reasons.iter().map(|r| r.key).collect();
     assert!(
         keys.contains(&"pushed_off") || keys.contains(&"threat"),

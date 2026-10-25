@@ -103,8 +103,13 @@ pub struct MoveAnalysis {
     /// 특징별 기여도 차이(최선 끝 − 둔 수 끝, 수 두는 쪽 관점). 승패 점수가 끼면 None.
     pub contributions: Option<[i32; NUM_FEATURES]>,
     pub reasons: Vec<Reason>,
+    /// 반대 방향(둔 수가 최선 수보다 나은 쪽)의 기여도 중 큰 것 최대 2개. 구슬을 내준 대가로 얻은 것.
+    /// 여기서 `played_value`는 최선 수 끝, `best_value`는 둔 수 끝 값이다(역할이 뒤바뀜).
+    pub compensations: Vec<Reason>,
     pub sentences: Vec<String>,
-    /// 주 변화 끝에서 구슬 차이(밀어낸 수 − 잃은 수)가 최선 수보다 나쁜 만큼 (친절 모드 경고에 쓴다)
+    /// 주 변화 끝의 구슬 차이(밀어낸 수 − 잃은 수): 최선 수 − 둔 수. 양수면 둔 수가 구슬을 더 내준다.
+    pub material_diff: i32,
+    /// `material_diff`의 0 이상 부분 (친절 모드 경고에 쓴다)
     pub material_drop: i32,
 }
 
@@ -165,7 +170,8 @@ pub fn analyze(
 
     let (bs, ps) = (best.score, played_line.score);
     let material = |l: &Line| l.mine.pushed_off - l.theirs.pushed_off;
-    let material_drop = (material(&best) - material(&played_line)).max(0);
+    let material_diff = material(&best) - material(&played_line);
+    let material_drop = material_diff.max(0);
     let mate = bs.abs() >= WIN_BOUND || ps.abs() >= WIN_BOUND;
     // 승패 점수가 끼면 ±3000(구슬 3개)으로 눌러서 비교하고, 아니면 점수 차이 그대로
     let loss = if mate {
@@ -180,14 +186,9 @@ pub fn analyze(
     } else if mate {
         Grade::Good // 둘 다 이기거나 둘 다 지는 수순
     } else {
-        // 등급 보정: 주 변화 끝에서 구슬 차이(밀어낸 수 − 잃은 수)가 최선 수보다 나쁘면
-        // 점수 손실이 작아도 1개면 최소 실수, 2개 이상이면 큰 실수로 본다.
-        let by_loss = Grade::from_loss(loss);
-        match material_drop {
-            d if d >= 2 => Grade::Blunder,
-            1 => by_loss.max(Grade::Mistake),
-            _ => by_loss,
-        }
+        // 등급은 엔진의 손실로만 매긴다. 구슬을 내줘도 그만큼 자리(중앙, 줄 등)를 얻으면 손실이 작다.
+        // 그런 수는 등급을 바꾸지 않고, 문장에서 "구슬을 내주지만 그 대신 …"으로 대가를 설명한다.
+        Grade::from_loss(loss)
     };
 
     let w = searcher.weights;
@@ -204,6 +205,16 @@ pub fn analyze(
     let reasons = contributions
         .map(|c| pick_reasons(&c, &best, &played_line, &w, loss))
         .unwrap_or_default();
+    // 대가: 기여도 부호를 뒤집고 두 수의 역할을 바꿔 같은 방식으로 고른다 (구슬 자체는 빼고)
+    let compensations = contributions
+        .map(|c| {
+            let neg: [i32; NUM_FEATURES] = std::array::from_fn(|i| -c[i]);
+            let mut v = pick_reasons(&neg, &played_line, &best, &w, 0);
+            v.retain(|r| r.key != "pushed_off");
+            v.truncate(2);
+            v
+        })
+        .unwrap_or_default();
     let mut a = MoveAnalysis {
         mover,
         depth,
@@ -213,7 +224,9 @@ pub fn analyze(
         grade,
         contributions,
         reasons,
+        compensations,
         sentences: Vec::new(),
+        material_diff,
         material_drop,
     };
     a.sentences = sentences(&a, &game.pos);
@@ -371,6 +384,12 @@ fn sentences(a: &MoveAnalysis, root: &Position) -> Vec<String> {
             a.loss as f64 / 1000.0
         )),
     }
+    if a.contributions.is_some() && a.material_diff <= -1 {
+        out.push(format!(
+            "최선 수는 구슬을 {}개 내주지만 그 대신 더 좋은 자리를 잡아요.",
+            -a.material_diff
+        ));
+    }
     let f = features::compute(root);
     let (now, now_theirs) = (f.side(a.mover), f.side(a.mover.other()));
     for r in &a.reasons {
@@ -379,10 +398,52 @@ fn sentences(a: &MoveAnalysis, root: &Position) -> Vec<String> {
             out.push(s);
         }
     }
+    if a.material_diff >= 1 {
+        if let Some(c) = a.compensations.first() {
+            let phrase = compensation_phrase(c);
+            if !phrase.is_empty() {
+                out.push(format!(
+                    "이 수는 구슬을 {}개 내주지만 그 대신 {phrase}.",
+                    a.material_diff
+                ));
+            }
+        }
+    }
     if a.grade != Grade::Best && a.reasons.is_empty() && a.contributions.is_some() {
         out.push("어느 한 가지 이유보다 여러 작은 차이가 모인 결과예요.".to_string());
     }
     out
+}
+
+/// 구슬을 내준 대가 문장 조각. `best_value` = 둔 수 끝, `played_value` = 최선 수 끝 (`compensations` 참고).
+fn compensation_phrase(r: &Reason) -> String {
+    let (p, b) = (r.best_value, r.played_value);
+    match (r.key, r.mine_side) {
+        ("center_distance", true) => {
+            format!("내 구슬이 중앙에 더 모여요(거리 합 {p}, 최선 수는 {b})")
+        }
+        ("center_distance", false) => {
+            format!("상대 구슬을 중앙에서 더 밀어내요(상대 거리 합 {p}, 최선 수는 {b})")
+        }
+        ("edge", true) => format!("가장자리의 내 구슬이 적어요({p}개, 최선 수는 {b}개)"),
+        ("edge", false) => format!("상대 구슬을 가장자리로 더 몰아요({p}개, 최선 수는 {b}개)"),
+        ("threat", true) => format!("밀려날 위험이 있는 내 구슬이 적어요({p}개, 최선 수는 {b}개)"),
+        ("threat", false) => {
+            format!("다음에 밀어낼 수 있는 상대 구슬이 많아요({p}개, 최선 수는 {b}개)")
+        }
+        ("push_moves", true) => format!("상대를 밀 수 있는 수가 많아요({p}개, 최선 수는 {b}개)"),
+        ("push_moves", false) => {
+            format!("상대가 나를 밀 수 있는 수가 적어요({p}개, 최선 수는 {b}개)")
+        }
+        ("triples", true) => format!("3개 줄이 많아요({p}개, 최선 수는 {b}개)"),
+        ("triples", false) => format!("상대의 3개 줄이 적어요({p}개, 최선 수는 {b}개)"),
+        ("groups", true) => format!("내 구슬이 덜 갈라져요({p}덩어리, 최선 수는 {b}덩어리)"),
+        ("groups", false) => format!("상대 구슬을 더 갈라 놓아요({p}덩어리, 최선 수는 {b}덩어리)"),
+        ("cohesion", true) => format!("내 구슬이 더 뭉쳐요(맞닿은 쌍 {p}, 최선 수는 {b})"),
+        ("isolated", true) => format!("혼자 떨어진 내 구슬이 적어요({p}개, 최선 수는 {b}개)"),
+        ("mobility", true) => format!("둘 수 있는 수가 많아요({p}개, 최선 수는 {b}개)"),
+        _ => String::new(),
+    }
 }
 
 /// 힌트: 최선 수와, 지금 국면에서 그 주 변화 끝까지 좋아지는 점.

@@ -731,8 +731,9 @@ async function playHuman(m) {
     if (friendly()) {
       say('생각해 보는 중…');
       analysis = (await call('analyzeCandidate', { text: m.text, ms: CANDIDATE_MS })).analysis;
-      // 큰 실수이거나, 최선 수보다 구슬을 잃는(덜 얻는) 수면 두기 전에 묻는다
-      if (analysis && (analysis.grade === 'blunder' || analysis.material_drop >= 1)) {
+      // 큰 실수이거나, 실수 등급이면서 최선 수보다 구슬을 잃는(덜 얻는) 수면 두기 전에 묻는다.
+      // 구슬을 내주고 자리를 얻는 수는 엔진 손실이 작으면 경고하지 않는다.
+      if (analysis && (analysis.grade === 'blunder' || (analysis.grade === 'mistake' && analysis.material_drop >= 1))) {
         const choice = await confirmBlunder(analysis);
         if (choice !== 'play') {
           ui.busy = false;

@@ -276,7 +276,7 @@ pub fn analysis_json(root: &Position, a: &MoveAnalysis) -> String {
     };
     format!(
         "{{\"mover\":\"{}\",\"grade\":\"{}\",\"grade_ko\":\"{}\",\"loss\":{},\"depth\":{},\
-         \"best\":{},\"played\":{},\"contributions\":{},\"reasons\":{},\"sentences\":{},\"material_drop\":{}}}",
+         \"best\":{},\"played\":{},\"contributions\":{},\"reasons\":{},\"sentences\":{},\"material_diff\":{},\"material_drop\":{}}}",
         color_name(a.mover),
         a.grade.code(),
         a.grade.korean(),
@@ -287,6 +287,7 @@ pub fn analysis_json(root: &Position, a: &MoveAnalysis) -> String {
         contrib,
         reasons_json(&a.reasons),
         sentences_json(&a.sentences),
+        a.material_diff,
         a.material_drop
     )
 }
