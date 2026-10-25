@@ -364,7 +364,8 @@ input[type="number"] { width: 6em; }
 .st-bar .b { background: #26262a; color: #fff; }
 .st-bar .d { background: #b9b2a3; color: #222; }
 .st-bar .w { background: #f4f0e6; color: #222; }
-.st-sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+.st-sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; word-break: keep-all; }
+.st-run { font-weight: 700; font-size: 0.9rem; margin: 12px 0 0; }
 .stats table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .stats th, .stats td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; }
 .stats th:first-child, .stats td:first-child, .stats th:nth-child(2), .stats td:nth-child(2) { text-align: left; }

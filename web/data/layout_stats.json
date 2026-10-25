@@ -1,0 +1,104 @@
+{
+ "note": "같은 실력의 컴퓨터끼리 둔 결과예요. 흑이 먼저 둬요. 판마다 흑과 백이 처음 한 수씩 아무 데나 둬서 서로 다른 판이 되게 했어요. 수 제한은 200수예요.",
+ "generated": "2026-10-25",
+ "command": "cargo run --release --example layout_stats -- <d3|d4> <판 수> 2",
+ "runs": [
+  {
+   "label": "보통 컴퓨터(깊이 3)끼리",
+   "setting": "d3",
+   "opening_plies": 2,
+   "move_limit": 200,
+   "layouts": {
+    "belgian": {
+     "games": 1000,
+     "black": 493,
+     "draw": 99,
+     "white": 408,
+     "avg_plies": 180,
+     "pushed_black": 3807,
+     "pushed_white": 3468,
+     "ends": {
+      "move_limit": 542,
+      "pushed_off": 458
+     }
+    },
+    "standard": {
+     "games": 1000,
+     "black": 470,
+     "draw": 127,
+     "white": 403,
+     "avg_plies": 190,
+     "pushed_black": 3300,
+     "pushed_white": 2954,
+     "ends": {
+      "move_limit": 694,
+      "pushed_off": 306
+     }
+    },
+    "german": {
+     "games": 1000,
+     "black": 553,
+     "draw": 87,
+     "white": 360,
+     "avg_plies": 177,
+     "pushed_black": 3936,
+     "pushed_white": 3153,
+     "ends": {
+      "move_limit": 502,
+      "pushed_off": 498
+     }
+    }
+   }
+  },
+  {
+   "label": "조금 더 센 컴퓨터(깊이 4)끼리",
+   "setting": "d4",
+   "opening_plies": 2,
+   "move_limit": 200,
+   "layouts": {
+    "belgian": {
+     "games": 300,
+     "black": 192,
+     "draw": 22,
+     "white": 86,
+     "avg_plies": 135,
+     "pushed_black": 1454,
+     "pushed_white": 1194,
+     "ends": {
+      "move_limit": 72,
+      "pushed_off": 223,
+      "repetition": 5
+     }
+    },
+    "standard": {
+     "games": 300,
+     "black": 115,
+     "draw": 108,
+     "white": 77,
+     "avg_plies": 174,
+     "pushed_black": 772,
+     "pushed_white": 698,
+     "ends": {
+      "move_limit": 186,
+      "pushed_off": 73,
+      "repetition": 41
+     }
+    },
+    "german": {
+     "games": 300,
+     "black": 165,
+     "draw": 10,
+     "white": 125,
+     "avg_plies": 128,
+     "pushed_black": 1393,
+     "pushed_white": 1215,
+     "ends": {
+      "move_limit": 54,
+      "pushed_off": 239,
+      "repetition": 7
+     }
+    }
+   }
+  }
+ ]
+}

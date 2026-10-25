@@ -1233,7 +1233,7 @@ async function renderEngineStats() {
   box.replaceChildren();
   for (const run of data.runs) {
     const h = document.createElement('p');
-    h.className = 'st-sub';
+    h.className = 'st-run';
     h.textContent = run.label;
     box.appendChild(h);
     for (const [layout, t] of Object.entries(run.layouts)) {
