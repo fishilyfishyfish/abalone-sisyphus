@@ -144,7 +144,10 @@ input[type="number"] { width: 6em; }
   touch-action: none; /* 판 위에서는 스와이프로 구슬을 민다 */
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
 }
+#board * { touch-action: none; }
 
 .msg {
   min-height: 3.2em;

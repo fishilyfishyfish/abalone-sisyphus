@@ -225,6 +225,10 @@ function buildBoard() {
   };
   window.addEventListener('pointerup', end);
   window.addEventListener('pointercancel', end);
+  // 판 위에서 손가락을 움직이면 화면이 스크롤되지 않게 한다. CSS touch-action: none만으로는
+  // SVG 위에서 일부 브라우저(특히 iOS Safari)가 위아래 쓸기를 스크롤로 가져가서, touchmove의 기본 동작을 직접 막는다.
+  // touchstart는 막지 않는다(막으면 화살표의 click이 사라진다).
+  board.addEventListener('touchmove', (e) => e.cancelable && e.preventDefault(), { passive: false });
 }
 
 /** SVG 좌표에서 가장 가까운 칸 (반 칸 넘게 떨어지면 없음) */
