@@ -371,10 +371,9 @@ input[type="number"] { width: 6em; }
 .stats th:first-child, .stats td:first-child, .stats th:nth-child(2), .stats td:nth-child(2) { text-align: left; }
 .stats .btn { margin-top: 8px; min-height: 40px; }
 
-/* 조작 방식: 누르기(칸에 점), 끌기(안내용 작은 화살표) */
+/* 조작 방식: 누르기(칸에 점) */
 .tgt { stroke: #fff; stroke-width: 4; opacity: 0.8; pointer-events: none; animation: pop 0.18s ease-out; transform-box: fill-box; transform-origin: center; }
 .tgt.go { fill: var(--accent); }
 .tgt.push { fill: #e08a1e; }
 .tgt.off { fill: var(--danger); }
-.arrow.hint-only { pointer-events: none; opacity: 0.85; }
 @media (prefers-reduced-motion: reduce) { .tgt { animation: none; } }

@@ -93,7 +93,7 @@ const isHumanTurn = () =>
   ui.state.outcome.status === 'ongoing' &&
   (ui.human === 'both' || ui.state.side === ui.human);
 const friendly = () => $('friendly').checked;
-const control = () => $('control').value; // 'swipe' | 'tap' | 'drag'
+const control = () => $('control').value; // 'swipe' | 'tap'
 
 function setState(res) {
   ui.state = res.state;
@@ -173,7 +173,6 @@ function buildBoard() {
   // 조작 방식별 제스처 (control()):
   // - swipe: 내 구슬에서 시작해 쓸면 지나간 줄(최대 3개)을 고른다. 쓸지 않고 떼면 탭.
   // - tap: 내 구슬을 누를 때마다 선택에 넣거나 뺀다. 쓸기는 없다.
-  // - drag: 고르는 건 swipe와 같고, 이미 고른 구슬을 누른 채 끌면 그 방향으로 둔다.
   layers.hits.addEventListener('pointerdown', (e) => {
     const i = e.target.getAttribute('data-i');
     if (i === null) return;
@@ -182,11 +181,6 @@ function buildBoard() {
     const mode = control();
     if (own && mode === 'tap') {
       ui.gesture = { type: 'tap', start, id: e.pointerId, own };
-      return;
-    }
-    if (own && mode === 'drag' && ui.selection.includes(start) && ui.options) {
-      ui.gesture = { type: 'drag', start, id: e.pointerId, own, p0: svgPoint(e), moved: false, dir: null, far: false };
-      ui.wasOnlyThis = ui.selection.length === 1;
       return;
     }
     ui.gesture = { type: 'swipe', start, id: e.pointerId, own, cells: [start], moved: false };
@@ -199,10 +193,6 @@ function buildBoard() {
   window.addEventListener('pointermove', (e) => {
     const g = ui.gesture;
     if (!g || !g.own || e.pointerId !== g.id || g.type === 'tap') return;
-    if (g.type === 'drag') {
-      dragMove(g, e);
-      return;
-    }
     const cell = cellAt(svgPoint(e));
     if (cell === undefined) return;
     if (cell !== g.start) g.moved = true;
@@ -219,10 +209,6 @@ function buildBoard() {
     ui.dragging = false;
     if (g.type === 'tap') {
       if (e.type === 'pointerup') tapToggle(g.start);
-      return;
-    }
-    if (g.type === 'drag') {
-      dragEnd(g, e.type === 'pointerup');
       return;
     }
     if (e.type !== 'pointerup') {
@@ -390,13 +376,9 @@ function renderSelection() {
     }
     const [ax, ay] = arrowAnchor(o, pts);
     const angle = (Math.atan2(uy, ux) * 180) / Math.PI;
-    const hintOnly = mode === 'drag'; // 끌기 조작: 화살표는 방향 안내만 하고 누를 수 없다
-    const g = el('g', { class: `arrow ${kind}${hintOnly ? ' hint-only' : ''}`, transform: `translate(${ax} ${ay})`, role: 'button', tabindex: 0 }, layers.arrows);
+    const g = el('g', { class: `arrow ${kind}`, transform: `translate(${ax} ${ay})`, role: 'button', tabindex: 0 }, layers.arrows);
     g.setAttribute('aria-label', m ? `${m.text}${m.push_off ? ' 밀어내기' : ''}` : '이 방향은 못 가요');
-    if (m && hintOnly) {
-      el('circle', { r: 20 }, g);
-      el('path', { d: 'M -7 -8 L 10 0 L -7 8 Z', transform: `rotate(${angle})` }, g);
-    } else if (m) {
+    if (m) {
       el('circle', { r: 38 }, g);
       el('path', { d: 'M -14 -16 L 19 0 L -14 16 Z', transform: `rotate(${angle})` }, g);
     } else {
@@ -633,7 +615,6 @@ function idleMessage() {
       {
         swipe: `움직일 ${me}을 손가락으로 쓱 쓸어서 골라요. 하나만 움직이려면 그 구슬을 눌러요.`,
         tap: `움직일 ${me}을 하나씩 눌러서 골라요. 한 줄로 붙은 구슬을 3개까지 고를 수 있어요.`,
-        drag: `움직일 ${me}을 쓸거나 눌러서 고른 다음, 고른 구슬을 가고 싶은 쪽으로 끌어요.`,
       }[control()],
     );
   }
@@ -654,8 +635,6 @@ function selectionMessage() {
   const mode = control();
   if (mode === 'tap') {
     say(`${what} 골랐어요. 점이 찍힌 칸을 누르면 그쪽으로 움직여요. 다른 내 구슬을 누르면 같이 골라져요.${off ? ' 빨간 점은 상대 구슬을 판 밖으로 밀어내요!' : ''}`);
-  } else if (mode === 'drag') {
-    say(`${what} 골랐어요. 고른 구슬을 누른 채 가고 싶은 쪽으로 끌었다가 놓아요.${off ? ' 빨간 화살표 쪽은 상대 구슬을 판 밖으로 밀어내요!' : ''}`);
   } else {
     say(`${what} 골랐어요. 큰 화살표를 눌러 움직여요.${off ? ' 빨간 화살표는 상대 구슬을 판 밖으로 밀어내요!' : ''}`);
   }
@@ -702,54 +681,6 @@ function tapToggle(i) {
     next = (sel.length < 3 && lineOf([...sel, i])) || [i];
   }
   select(next);
-}
-
-/** 끌기 조작: 끄는 방향(6방향 중 가장 가까운 쪽)으로 고른 구슬과 밀릴 구슬을 손가락 따라 옮겨 보여준다 */
-function dragMove(g, e) {
-  const p = svgPoint(e);
-  const vx = p.x - g.p0.x, vy = p.y - g.p0.y;
-  if (Math.hypot(vx, vy) < S * 0.15) {
-    dragReset();
-    g.dir = null;
-    g.far = false;
-    return;
-  }
-  g.moved = true;
-  let dir = 0, dot = -Infinity;
-  for (let d = 0; d < 6; d++) {
-    const [ux, uy] = dirVec(d);
-    if (vx * ux + vy * uy > dot) [dir, dot] = [d, vx * ux + vy * uy];
-  }
-  const o = ui.options.find((x) => x.dir === dir);
-  const ok = o && o.move;
-  // 못 가는 방향은 조금만 움직여서 막힌 느낌을 준다
-  const along = Math.min(Math.max(dot, 0), S) * (ok ? 1 : 0.2);
-  g.dir = dir;
-  g.far = dot > S * 0.35;
-  const [ux, uy] = dirVec(dir);
-  const t = `translate(${ux * along} ${uy * along})`;
-  const cells = ok ? [...o.move.cells, ...pushedCells(o.move)] : ui.selection;
-  for (const [i, m] of marbleEls) {
-    if (cells.includes(i)) m.setAttribute('transform', t);
-    else m.removeAttribute('transform');
-  }
-  layers.sel.setAttribute('transform', t);
-}
-
-function dragReset() {
-  for (const m of marbleEls.values()) m.removeAttribute('transform');
-  layers.sel.removeAttribute('transform');
-}
-
-function dragEnd(g, released) {
-  dragReset();
-  if (!released) return;
-  if (g.far && g.dir !== null) {
-    const o = ui.options.find((x) => x.dir === g.dir);
-    if (o) choose(o);
-  } else if (!g.moved) {
-    select(ui.wasOnlyThis ? [] : [g.start]); // 고른 구슬을 그냥 누르면: 하나면 해제, 여럿이면 그 구슬만
-  }
 }
 
 async function select(cells) {
@@ -1426,11 +1357,6 @@ const HELP = {
     '움직일 내 구슬을 하나씩 눌러요. 누를 때마다 골라지고, 고른 구슬을 다시 누르면 빠져요.',
     '한 줄로 붙은 구슬을 3개까지 고를 수 있어요. 줄이 안 되는 구슬을 누르면 그 구슬부터 새로 골라요.',
     '갈 수 있는 칸에 점이 찍혀요. 그 칸을 누르면 고른 구슬이 같이 움직여요.',
-  ],
-  drag: [
-    '움직일 내 구슬을 쓸거나 눌러서 골라요(쓸고 화살표 누르기와 같아요).',
-    '고른 구슬을 누른 채 가고 싶은 쪽으로 끌었다가 놓으면 그쪽으로 움직여요. 끄는 동안 구슬이 따라와요.',
-    '작은 화살표는 갈 수 있는 쪽을 알려 줘요. 못 가는 쪽으로 끌면 구슬이 조금만 움직이고 이유를 알려 줘요.',
   ],
 };
 const HELP_COMMON = [
