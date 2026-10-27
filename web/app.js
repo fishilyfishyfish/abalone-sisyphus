@@ -80,6 +80,9 @@ const ui = {
   loadedTags: null, // 불러온 기보의 태그 ([[이름, 값], ...]). 저장할 때 이름·날짜를 그대로 쓴다
   counted: false, // 이 대국 결과를 내 기록에 넣었는지 (불러온 대국은 넣지 않는다)
   only: null, // 누르기 조작: 누른 칸으로 갈 수 있는 수가 여럿일 때 화살표로 보여줄 방향들
+  legal: [], // 둘 차례의 합법수 (첫 돌·끝점 조작에서 쓴다)
+  endsFirst: null, // 첫 돌·끝점 조작: 고른 첫 돌
+  endsChoice: null, // 첫 돌·끝점 조작: 같은 두 칸으로 갈 수 있는 수가 여럿일 때 그 수들
 };
 
 const $ = (id) => document.getElementById(id);
@@ -93,13 +96,16 @@ const isHumanTurn = () =>
   ui.state.outcome.status === 'ongoing' &&
   (ui.human === 'both' || ui.state.side === ui.human);
 const friendly = () => $('friendly').checked;
-const control = () => $('control').value; // 'swipe' | 'tap'
+const control = () => $('control').value; // 'swipe' | 'tap' | 'ends'
 
 function setState(res) {
   ui.state = res.state;
   ui.features = res.features;
   ui.evaluation = res.evaluation;
   ui.singles = res.singles || {};
+  ui.legal = res.legal || [];
+  ui.endsFirst = null;
+  ui.endsChoice = null;
   ui.selection = [];
   ui.options = null;
   ui.only = null;
@@ -179,7 +185,7 @@ function buildBoard() {
     const start = Number(i);
     const own = isHumanTurn() && !ui.busy && ui.state.board[start] === ownChar();
     const mode = control();
-    if (own && mode === 'tap') {
+    if (own && (mode === 'tap' || mode === 'ends')) {
       ui.gesture = { type: 'tap', start, id: e.pointerId, own };
       return;
     }
@@ -208,7 +214,7 @@ function buildBoard() {
     ui.gesture = null;
     ui.dragging = false;
     if (g.type === 'tap') {
-      if (e.type === 'pointerup') tapToggle(g.start);
+      if (e.type === 'pointerup') (control() === 'ends' ? endsTap(g.start) : tapToggle(g.start));
       return;
     }
     if (e.type !== 'pointerup') {
@@ -295,7 +301,7 @@ function drawMoveArrow(layer, m, cls) {
 
 function renderNotes() {
   layers.notes.replaceChildren();
-  if (ui.hint && isHumanTurn() && !ui.selection.length) drawMoveArrow(layers.notes, ui.hint, 'best');
+  if (ui.hint && isHumanTurn() && !ui.selection.length && ui.endsFirst === null) drawMoveArrow(layers.notes, ui.hint, 'best');
 }
 
 function renderMarbles(boardStr) {
@@ -347,6 +353,10 @@ function renderSelection() {
   layers.glow.replaceChildren();
   const myTurn = isHumanTurn();
 
+  if (control() === 'ends' && ui.endsFirst !== null) {
+    renderEnds();
+    return;
+  }
   if (!ui.selection.length) {
     if (myTurn && !ui.dragging) {
       // 움직일 수 있는 내 구슬을 은은하게 표시
@@ -619,6 +629,7 @@ function idleMessage() {
       {
         swipe: `움직일 ${me}을 손가락으로 쓱 쓸어서 골라요. 하나만 움직이려면 그 구슬을 눌러요.`,
         tap: `움직일 ${me}을 하나씩 눌러서 골라요. 한 줄로 붙은 구슬을 3개까지 고를 수 있어요.`,
+        ends: `움직일 줄의 첫 ${me}을 누르고, 끝점(점 찍힌 칸)을 눌러요.`,
       }[control()],
     );
   }
@@ -687,9 +698,139 @@ function tapToggle(i) {
   select(next);
 }
 
+// ---------------------------------------------------------------- 첫 돌 · 끝점 조작
+// 수 하나를 (첫 돌, 끝점) 두 칸으로 나타낸다.
+// - 줄 방향(1개 포함): 첫 돌 = 맨 뒤 돌, 끝점 = 맨 앞 돌이 갈 칸 (상대를 밀면 지금 상대 돌이 있는 칸)
+// - 옆걸음: 첫 돌 = 한쪽 끝 돌, 끝점 = 반대쪽 끝 돌이 갈 칸 (두 끝 어느 쪽에서 시작해도 된다)
+
+/** 수 m을 나타내는 (첫 돌, 끝점) 쌍들 */
+function endPairs(m) {
+  const head = (d) => m.cells.find((c) => !m.cells.includes(step(c, d)));
+  if (m.inline) return [[head((m.dir + 3) % 6), step(head(m.dir), m.dir)]];
+  const a = m.cells[0], b = m.cells[m.cells.length - 1];
+  return [[a, step(b, m.dir)], [b, step(a, m.dir)]];
+}
+
+/** 첫 돌 f에서 시작하는 수들: 끝점 → 수 목록 */
+function endsFrom(f) {
+  const out = new Map();
+  for (const m of ui.legal) {
+    for (const [first, end] of endPairs(m)) {
+      if (first !== f || end === undefined) continue;
+      if (!out.has(end)) out.set(end, []);
+      if (!out.get(end).includes(m)) out.get(end).push(m);
+    }
+  }
+  // 같은 두 칸으로 여러 수가 되면 줄 방향 수, 그다음 구슬이 적은 수로 친다(구슬 하나 옆 칸 누르기가 가장 흔해서).
+  // 밀려난 수도 반대쪽 끝에서 시작하면 둘 수 있다. 무작위 국면 3.6만 개(합법수 239만 개)에서 모든 수가
+  // 어떤 (첫 돌, 끝점)으로 하나로 정해지는지 확인했다. 그래도 여럿이 남으면 renderEnds가 화살표로 고르게 한다.
+  for (const [end, ms] of out) {
+    let keep = ms.some((m) => m.inline) ? ms.filter((m) => m.inline) : ms;
+    const n = Math.min(...keep.map((m) => m.cells.length));
+    keep = keep.filter((m) => m.cells.length === n);
+    out.set(end, keep);
+  }
+  return out;
+}
+
+function endsReset() {
+  ui.endsFirst = null;
+  ui.endsChoice = null;
+}
+
+function endsTap(i) {
+  if (!isHumanTurn() || ui.busy) return;
+  const own = ui.state.board[i] === ownChar();
+  if (ui.endsFirst !== null && !ui.endsChoice) {
+    const hit = endsFrom(ui.endsFirst).get(i);
+    if (hit && hit.length === 1) {
+      const m = hit[0];
+      endsReset();
+      playHuman(m);
+      return;
+    }
+    if (hit) {
+      ui.endsChoice = hit;
+      render();
+      say('그 칸으로 가는 방법이 두 가지예요. 화살표 중에 골라요.');
+      return;
+    }
+  }
+  if (own && i !== ui.endsFirst) {
+    endsReset();
+    if (!endsFrom(i).size) {
+      render();
+      say('이 구슬로 시작하는 수가 없어요. 다른 구슬을 눌러요.', 'warn');
+      shake();
+      return;
+    }
+    ui.endsFirst = i;
+    render();
+    say('끝점을 눌러요. 줄 방향이면 맨 앞 구슬이 갈 칸, 옆으로 가면 반대쪽 끝 구슬이 갈 칸이에요.');
+    return;
+  }
+  // 첫 돌을 다시 누르거나 빈 곳을 누르면 처음부터
+  endsReset();
+  render();
+  idleMessage();
+}
+
+function renderEnds() {
+  const f = ui.endsFirst;
+  const [fx, fy] = px(CELLS[f].r, CELLS[f].c);
+  el('circle', { cx: fx, cy: fy, r: R_MARBLE + 4, class: 'sel-ring' }, layers.sel);
+  if (ui.endsChoice) {
+    // 같은 두 칸으로 갈 수 있는 수가 여럿: 각 수를 움직일 구슬 고리 + 누를 수 있는 화살표로
+    for (const m of ui.endsChoice) {
+      const dest = destinations(m);
+      const pts = (dest.length ? dest : m.cells).map((i) => px(CELLS[i].r, CELLS[i].c));
+      const ax = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+      const ay = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+      const [ux, uy] = dirVec(m.dir);
+      const kind = m.push_off ? 'off' : pushedCells(m).length ? 'push' : 'go';
+      const g = el('g', { class: `arrow ${kind}`, transform: `translate(${ax} ${ay})`, role: 'button', tabindex: 0 }, layers.arrows);
+      g.setAttribute('aria-label', m.text);
+      el('circle', { r: 38 }, g);
+      el('path', { d: 'M -14 -16 L 19 0 L -14 16 Z', transform: `rotate(${(Math.atan2(uy, ux) * 180) / Math.PI})` }, g);
+      g.addEventListener('pointerenter', () => endsPreview(m));
+      g.addEventListener('pointerleave', () => endsPreview(null));
+      const go = (e) => {
+        e.stopPropagation();
+        endsReset();
+        playHuman(m);
+      };
+      g.addEventListener('click', go);
+      g.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && go(e));
+    }
+    return;
+  }
+  for (const [end, ms] of endsFrom(f)) {
+    const m = ms[0];
+    const kind = ms.some((x) => x.push_off) ? 'off' : ms.some((x) => pushedCells(x).length) ? 'push' : 'go';
+    const [x, y] = px(CELLS[end].r, CELLS[end].c);
+    const dot = el('circle', { cx: x, cy: y, r: R_MARBLE * 0.42, class: `tgt ${kind}` }, layers.sel);
+    if (ms.length === 1) dot.dataset.text = m.text;
+  }
+}
+
+/** 그 수로 움직일 구슬과 도착 칸을 도형처럼 보여준다 */
+function endsPreview(m) {
+  layers.sel.querySelectorAll('.preview').forEach((e) => e.remove());
+  if (!m) return;
+  for (const i of m.cells) {
+    const [x, y] = px(CELLS[i].r, CELLS[i].c);
+    el('circle', { cx: x, cy: y, r: R_MARBLE + 4, class: 'sel-ring preview' }, layers.sel);
+  }
+  for (const t of destinations(m)) {
+    const [x, y] = px(CELLS[t].r, CELLS[t].c);
+    el('circle', { cx: x, cy: y, r: R_MARBLE * 0.5, class: 'target preview' }, layers.sel);
+  }
+}
+
 async function select(cells) {
   ui.selection = cells;
   ui.only = null;
+  endsReset();
   if (cells.length === 0) {
     ui.options = null;
   } else {
@@ -707,6 +848,10 @@ async function select(cells) {
 /** 빈칸이나 상대 구슬을 눌렀을 때 (내 구슬은 쓸기 제스처가 처리) */
 function onCellTap(i) {
   if (!isHumanTurn() || ui.busy) return;
+  if (control() === 'ends') {
+    endsTap(i);
+    return;
+  }
   const v = ui.state.board[i];
   // 빈칸이나 상대 구슬: 고른 구슬이 갈 칸(또는 밀릴 상대 구슬)이면 그 수를 둔다
   if (ui.selection.length && ui.options) {
@@ -1361,6 +1506,12 @@ const HELP = {
     '움직일 내 구슬을 하나씩 눌러요. 누를 때마다 골라지고, 고른 구슬을 다시 누르면 빠져요.',
     '한 줄로 붙은 구슬을 3개까지 고를 수 있어요. 줄이 안 되는 구슬을 누르면 그 구슬부터 새로 골라요.',
     '갈 수 있는 칸에 점이 찍혀요. 그 칸을 누르면 고른 구슬이 같이 움직여요.',
+  ],
+  ends: [
+    '움직일 줄의 첫 구슬을 눌러요. 줄 방향으로 갈 때는 맨 뒤 구슬, 옆으로 갈 때는 한쪽 끝 구슬이에요.',
+    '그다음 끝점을 눌러요. 줄 방향이면 맨 앞 구슬이 갈 칸, 옆으로 가면 반대쪽 끝 구슬이 갈 칸이에요. 끝점이 될 수 있는 칸에 점이 찍혀요.',
+    '같은 두 칸으로 여러 수가 되면 줄 방향 수, 그다음 구슬이 적은 수로 둬요. 다른 수를 두고 싶으면 반대쪽 끝 구슬부터 눌러요.',
+    '첫 구슬을 다시 누르면 처음부터예요.',
   ],
 };
 const HELP_COMMON = [
