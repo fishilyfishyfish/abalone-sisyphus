@@ -12,6 +12,8 @@ pub const MAX_PLY: usize = 64;
 pub const INF: i32 = WIN + 10_000;
 /// 정지 탐색에서 연달아 볼 밀어내기 수의 최대 개수.
 pub const QS_DEPTH: i32 = 8;
+/// 정적 평가 캐시 칸 수 = 2^ECACHE_BITS (칸당 16바이트, 1MB).
+const ECACHE_BITS: u32 = 16;
 /// 시계를 확인하는 노드 간격.
 const CLOCK_EVERY: u64 = 1024;
 
@@ -72,6 +74,11 @@ struct Entry {
     flag: u8,
 }
 
+/// 수 정렬 점수: 치환표 수.
+const TT_KEY: i32 = 1 << 30;
+/// 수 정렬 점수: 첫 번째 킬러. 두 번째 킬러는 1 작고, 히스토리는 그보다 작다.
+const KILLER_KEY: i32 = 1 << 27;
+
 const EXACT: u8 = 1;
 const LOWER: u8 = 2;
 const UPPER: u8 = 3;
@@ -118,6 +125,7 @@ fn from_tt(score: i32, ply: usize) -> i32 {
 }
 
 pub struct Searcher {
+    /// 바꾸면 `clear()`로 평가 캐시를 비워야 한다.
     pub weights: Weights,
     tt: Vec<Entry>,
     killers: [[u16; 2]; MAX_PLY],
@@ -125,6 +133,10 @@ pub struct Searcher {
     pv: Box<[[Move; MAX_PLY]; MAX_PLY]>,
     pv_len: [usize; MAX_PLY],
     bufs: Vec<Vec<Move>>,
+    /// 정적 평가 캐시 (키, 점수). 같은 국면을 반복 심화·치환으로 여러 번 평가하는 것을 줄인다
+    ecache: Vec<(u64, i32)>,
+    /// 수 정렬 점수 (bufs와 같은 순서). 할당을 줄이려고 깊이마다 재사용한다
+    keys: Vec<Vec<i32>>,
     /// 대국 기록 + 현재 탐색 경로의 해시 (반복 판정)
     path: Vec<u64>,
     base_ply: usize,
@@ -155,6 +167,8 @@ impl Searcher {
             pv: Box::new([[NO_MOVE; MAX_PLY]; MAX_PLY]),
             pv_len: [0; MAX_PLY],
             bufs: (0..MAX_PLY).map(|_| Vec::with_capacity(128)).collect(),
+            keys: (0..MAX_PLY).map(|_| Vec::with_capacity(128)).collect(),
+            ecache: vec![(0, 0); 1 << ECACHE_BITS],
             path: Vec::new(),
             base_ply: 0,
             move_limit: 0,
@@ -178,8 +192,24 @@ impl Searcher {
         )
     }
 
+    /// 정적 평가(둘 차례 관점). 해시는 밀어낸 수를 담지 않으므로 키에 섞는다.
+    fn eval(&mut self, pos: &Position) -> i32 {
+        let key = pos.hash
+            ^ (pos.pushed[0] as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (pos.pushed[1] as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            | 1;
+        let slot = &mut self.ecache[(key as usize) & ((1 << ECACHE_BITS) - 1)];
+        if slot.0 == key {
+            return slot.1;
+        }
+        let v = eval::evaluate(pos, &self.weights);
+        *slot = (key, v);
+        v
+    }
+
     /// 치환표와 수 정렬 기록을 비운다.
     pub fn clear(&mut self) {
+        self.ecache.iter_mut().for_each(|e| *e = (0, 0));
         self.tt.iter_mut().for_each(|e| *e = Entry::default());
         self.killers = [[0; 2]; MAX_PLY];
         self.history.iter_mut().for_each(|h| *h = 0);
@@ -402,7 +432,7 @@ impl Searcher {
             && allow_null
             && depth >= 3
             && beta.abs() < WIN_BOUND
-            && eval::evaluate(pos, &self.weights) >= beta
+            && self.eval(pos) >= beta
         {
             let r = if depth >= 6 { 3 } else { 2 };
             self.path.push(pos.hash);
@@ -418,27 +448,56 @@ impl Searcher {
             }
         }
 
+        // 치환표 수가 있으면 그것부터 둬 본다. 거기서 베타 컷이 나면 나머지 수는 만들지도 않는다.
         let mut moves = std::mem::take(&mut self.bufs[ply]);
+        let mut keys = std::mem::take(&mut self.keys[ply]);
         moves.clear();
-        pos.legal_moves_into(&mut moves);
-        if moves.is_empty() {
-            self.bufs[ply] = moves;
-            return self.adjudicate(pos, ply);
+        keys.clear();
+        let mut generated = false;
+        match tt_move.filter(|&m| pos.is_legal(m)) {
+            Some(m) => {
+                moves.push(m);
+                keys.push(TT_KEY);
+            }
+            None => {
+                pos.legal_moves_into(&mut moves);
+                if moves.is_empty() {
+                    self.bufs[ply] = moves;
+                    self.keys[ply] = keys;
+                    return self.adjudicate(pos, ply);
+                }
+                self.order(pos, &mut moves, &mut keys, 0, None, ply);
+                generated = true;
+            }
         }
-        self.order(pos, &mut moves, tt_move, ply);
-        let killers = self.killers[ply];
 
         self.path.push(pos.hash);
         let mut best = -INF;
         let mut best_move = None;
-        for (i, &m) in moves.iter().enumerate() {
+        let mut i = 0;
+        loop {
+            if i == moves.len() {
+                if generated {
+                    break;
+                }
+                // 치환표 수로 컷이 안 났다: 나머지 수를 만들어 뒤에 붙인다
+                let tt = moves[0];
+                pos.legal_moves_into(&mut moves);
+                if let Some(k) = moves[1..].iter().position(|&m| m == tt) {
+                    moves.remove(k + 1);
+                }
+                self.order(pos, &mut moves, &mut keys, 1, None, ply);
+                generated = true;
+                if i == moves.len() {
+                    break;
+                }
+            }
+            pick_next(&mut moves, &mut keys, i);
+            let m = moves[i];
             // 늦은 수 줄이기: 정렬상 뒤쪽의 조용한 수는 한두 수 얕게 먼저 보고, alpha를 넘으면 제 깊이로 다시 본다
             let reduce = if self.prune && i >= 3 && depth >= 3 {
-                let quiet = pos
-                    .inline_kind(m)
-                    .is_none_or(|k| matches!(k, InlineResult::Step));
-                let p = pack(m);
-                if quiet && p != killers[0] && p != killers[1] {
+                // 정렬 점수가 히스토리 구간이면 밀기가 아니고 치환표 수·킬러도 아니다
+                if keys[i] < KILLER_KEY - 1 {
                     if i >= 12 && depth >= 5 {
                         2
                     } else {
@@ -498,9 +557,11 @@ impl Searcher {
                     }
                 }
             }
+            i += 1;
         }
         self.path.pop();
         self.bufs[ply] = moves;
+        self.keys[ply] = keys;
         if self.stop {
             return 0;
         }
@@ -530,7 +591,7 @@ impl Searcher {
         if let Some(s) = self.terminal(pos, ply) {
             return s;
         }
-        let stand = eval::evaluate(pos, &self.weights);
+        let stand = self.eval(pos);
         if stand >= beta || qd == 0 || ply >= MAX_PLY - 1 {
             return stand;
         }
@@ -585,35 +646,55 @@ impl Searcher {
     }
 
     /// 수 정렬: 치환표 수 > 밀어내기 > 판 안 밀기(많이 밀수록) > 킬러 > 히스토리.
-    fn order(&self, pos: &Position, moves: &mut [Move], tt_move: Option<Move>, ply: usize) {
+    /// keys에는 각 수의 점수가 같은 순서로 남는다(LMR이 조용한 수를 가리는 데 쓴다).
+    /// moves[start..]의 점수를 keys 뒤에 붙인다(keys 길이는 start여야 한다).
+    fn order(
+        &self,
+        pos: &Position,
+        moves: &mut [Move],
+        keys: &mut Vec<i32>,
+        start: usize,
+        tt_move: Option<Move>,
+        ply: usize,
+    ) {
         let tt = tt_move.map(pack).unwrap_or(0);
         let k = self.killers[ply];
-        let mut keyed: Vec<(i32, Move)> = moves
-            .iter()
-            .map(|&m| {
-                let p = pack(m);
-                let s = if p == tt {
-                    1 << 30
-                } else {
-                    match pos.inline_kind(m) {
-                        Some(InlineResult::PushOff(_)) => 1 << 29,
-                        Some(InlineResult::Push(n)) => (1 << 28) + n as i32,
-                        _ if p == k[0] => 1 << 27,
-                        _ if p == k[1] => (1 << 27) - 1,
-                        _ => self.history[hist_index(m)].min((1 << 26) - 1),
-                    }
-                };
-                (s, m)
-            })
-            .collect();
-        keyed.sort_by_key(|x| std::cmp::Reverse(x.0));
-        for (slot, (_, m)) in moves.iter_mut().zip(keyed) {
-            *slot = m;
+        keys.truncate(start);
+        for &m in moves[start..].iter() {
+            let p = pack(m);
+            keys.push(if p == tt {
+                TT_KEY
+            } else {
+                match pos.inline_kind(m) {
+                    Some(InlineResult::PushOff(_)) => 1 << 29,
+                    Some(InlineResult::Push(n)) => (1 << 28) + n as i32,
+                    _ if p == k[0] => KILLER_KEY,
+                    _ if p == k[1] => KILLER_KEY - 1,
+                    _ => self.history[hist_index(m)].min(KILLER_KEY - 2),
+                }
+            });
         }
+        // 정렬은 하지 않는다. 탐색이 i번째 수를 볼 때 pick_next가 남은 것 중 최고를 앞으로 꺼낸다
+        // (베타 컷이 앞에서 나면 나머지는 정렬할 필요가 없다)
     }
 
     pub fn nodes(&self) -> u64 {
         self.nodes
+    }
+}
+
+/// moves[i..] 중 점수가 가장 높은 수(같으면 앞의 것)를 i 자리로 옮긴다. 사이의 수들은 한 칸씩 밀려
+/// 원래 순서를 지키므로, 끝까지 다 꺼내면 안정 정렬한 것과 같은 순서가 된다.
+fn pick_next(moves: &mut [Move], keys: &mut [i32], i: usize) {
+    let mut best = i;
+    for j in i + 1..moves.len() {
+        if keys[j] > keys[best] {
+            best = j;
+        }
+    }
+    if best != i {
+        moves[i..=best].rotate_right(1);
+        keys[i..=best].rotate_right(1);
     }
 }
 

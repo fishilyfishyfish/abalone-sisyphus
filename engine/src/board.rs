@@ -123,6 +123,18 @@ pub const CENTER_DIST: [u8; 121] = {
     out
 };
 
+/// 중앙 거리별 칸 마스크 (RINGS[k] = 거리 k인 칸들).
+pub const RINGS: [u128; 5] = {
+    let mut r = [0u128; 5];
+    let mut i = 0;
+    while i < NUM_CELLS {
+        let s = CELLS[i] as usize;
+        r[CENTER_DIST[s] as usize] |= 1u128 << s;
+        i += 1;
+    }
+    r
+};
+
 /// 가장자리(중앙 거리 4) 칸 마스크.
 pub const EDGE: u128 = {
     let mut m = 0u128;
@@ -583,6 +595,32 @@ impl Position {
         self.hash ^= hash_mask(own_xor, me) ^ hash_mask(opp_xor, them) ^ ZOBRIST_SIDE;
         self.side = self.side.other();
         undo
+    }
+
+    /// 합법수인지 (합법수를 다 만들지 않고 확인). 치환표에서 꺼낸 수처럼 다른 국면의 수일 수 있는 것에 쓴다.
+    /// 합법수 생성과 같은 정규형(1개면 axis 0, tail은 줄의 축 방향 맨 아래)만 받는다.
+    pub fn is_legal(&self, m: Move) -> bool {
+        if m.n == 0 || m.n > 3 || m.dir > 5 || m.axis > 2 || (m.n == 1 && m.axis != 0) {
+            return false;
+        }
+        let own = self.own();
+        let t = m.tail as i32;
+        if t >= 121 || !has(VALID, t) {
+            return false;
+        }
+        let a = DIRS[m.axis as usize];
+        // 줄 칸이 모두 내 구슬이어야 한다 (판 위 칸에서 한 칸 나가면 패딩 안이라 has가 안전하다)
+        if !(0..m.n as i32).all(|i| has(own, t + i * a)) {
+            return false;
+        }
+        let d = DIRS[m.dir as usize];
+        if m.is_inline() {
+            let (head, _) = m.head_and_rear();
+            inline_result(own, self.opp(), head, d, m.n as i32).is_some()
+        } else {
+            let empty = VALID & !(own | self.opp());
+            m.cells().all(|s| has(empty, s + d))
+        }
     }
 
     /// 한 수 쉬기 (탐색의 널 무브용). 두 번 부르면 원래대로 돌아온다.

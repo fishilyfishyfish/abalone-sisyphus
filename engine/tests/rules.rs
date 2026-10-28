@@ -336,3 +336,39 @@ fn layout_feature_symmetry() {
         assert_eq!(f.black.endangered, 0);
     }
 }
+
+#[test]
+fn is_legal_matches_generated_moves() {
+    // 모든 (tail, n, axis, dir) 조합에 대해 is_legal == 합법수 목록에 있음 (무작위 대국 국면들)
+    use abalone_engine::rng::Rng;
+    let mut rng = Rng::new(91);
+    let mut checked = 0;
+    for gi in 0..60 {
+        let layout = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy][gi % 3];
+        let mut g = Game::new(GameConfig {
+            layout,
+            move_limit: 0,
+            ..GameConfig::default()
+        });
+        for _ in 0..rng.below(150) {
+            let ms = g.legal_moves();
+            if ms.is_empty() {
+                break;
+            }
+            g.play_unchecked(ms[rng.below(ms.len())]);
+        }
+        let legal = g.pos.legal_moves();
+        for tail in 0..121u8 {
+            for n in 0..=4u8 {
+                for axis in 0..4u8 {
+                    for dir in 0..7u8 {
+                        let m = Move { tail, n, axis, dir };
+                        assert_eq!(g.pos.is_legal(m), legal.contains(&m), "{m:?}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 100_000);
+}

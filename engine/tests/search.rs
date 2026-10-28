@@ -136,6 +136,38 @@ fn contributions_sum_to_evaluation() {
 }
 
 #[test]
+fn fast_evaluate_matches_feature_sum() {
+    // evaluate는 특징값 구조체 없이 바로 세는 빠른 경로다. 모든 특징의 가중치가 0이 아닌 경우까지
+    // score(diff)와 같은지 본다 (가중치 0인 특징을 건너뛰는 분기도 함께 확인된다).
+    let mut weights = vec![eval::WEIGHTS_V0, eval::WEIGHTS_V1, W];
+    let mut rng = abalone_engine::rng::Rng::new(77);
+    for _ in 0..6 {
+        let w: [i32; eval::NUM_FEATURES] = std::array::from_fn(|i| {
+            if i == 0 {
+                1000
+            } else {
+                rng.below(201) as i32 - 100
+            }
+        });
+        weights.push(eval::Weights(w));
+    }
+    let mut checked = 0;
+    for g in random_games(9, 150, 140) {
+        // 밀어낸 수가 0이 아닌 국면도 섞는다
+        let p = g.pos;
+        for w in &weights {
+            assert_eq!(
+                eval::evaluate(&p, w),
+                eval::score(&features::diff(&p, p.side), w),
+                "{w:?}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 1000);
+}
+
+#[test]
 fn search_score_matches_plain_minimax() {
     let mut s = searcher();
     let mut checked = 0;

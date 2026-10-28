@@ -99,29 +99,45 @@ pub fn cohesion_pairs(m: u128) -> i32 {
 }
 
 /// own 쪽이 지금 둔다고 가정할 때 상대 구슬을 미는 수의 개수와, 판 밖으로 밀어낼 수 있는 상대 구슬 집합.
-/// 미는 수는 (줄 맨 앞 구슬, 방향, 길이)로 하나씩 정해지므로 맨 앞 기준으로 한 번 돌면 된다.
+/// 미는 수는 (줄 맨 앞 구슬, 방향, 길이)로 하나씩 정해진다. 방향마다 "맨 앞 구슬" 집합을 비트 연산으로
+/// 한꺼번에 구한다(2:1, 3:1, 3:2 세 경우). 각 경우의 집합 비트 하나가 미는 수 하나다.
+/// 줄을 이루는 칸이 모두 판 위라 한 칸 앞은 늘 패딩 격자 안(0..=120)이어서, 시프트로 잃는 비트가 없다.
 pub fn push_stats(own: u128, opp: u128) -> (i32, u128) {
-    let mut count = 0;
-    let mut targets = 0u128;
-    // 맨 앞 구슬 바로 앞이 상대 구슬이어야 밀기가 된다
-    for (d, &dd) in DIRS.iter().enumerate() {
-        let heads = own & shift(opp, (d + 3) % 6);
-        for s in Bits(heads) {
-            for n in 2..=3i32 {
-                if !(1..n).all(|i| has(own, s - i * dd)) {
-                    break;
-                }
-                match inline_result(own, opp, s, dd, n) {
-                    Some(InlineResult::Push(_)) => count += 1,
-                    Some(InlineResult::PushOff(k)) => {
-                        count += 1;
-                        targets |= bit(s + k as i32 * dd);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    let free = !(own | opp); // 빈칸이거나 판 밖
+    let off = !VALID;
+    // 시프트 양을 상수로 두려고 방향마다 따로 펼친다 (u128 가변 시프트는 느리다)
+    let r = [
+        push_dir::<1>(own, opp, free, off),
+        push_dir::<12>(own, opp, free, off),
+        push_dir::<11>(own, opp, free, off),
+        push_dir::<{ -1 }>(own, opp, free, off),
+        push_dir::<{ -12 }>(own, opp, free, off),
+        push_dir::<{ -11 }>(own, opp, free, off),
+    ];
+    r.iter().fold((0, 0), |(c, t), &(c2, t2)| (c + c2, t | t2))
+}
+
+/// 패딩 칸 번호 오프셋 O 방향으로 미는 수 (`push_stats` 참고).
+#[inline(always)]
+fn push_dir<const O: i32>(own: u128, opp: u128, free: u128, off: u128) -> (i32, u128) {
+    // fwd(m): 각 비트를 O만큼 옮긴다. ahead(m): 한 칸 앞(O 방향)이 m인 칸들
+    let fwd = |m: u128| if O > 0 { m << O } else { m >> (-O) };
+    let ahead = |m: u128| if O > 0 { m >> O } else { m << (-O) };
+    let own2 = own & fwd(own); // 맨 앞과 그 뒤 1칸이 내 구슬
+    let own3 = own2 & fwd(fwd(own)); // 뒤 2칸까지
+    let o1 = ahead(opp); // 바로 앞이 상대
+    let o2 = o1 & ahead(ahead(opp)); // 앞 2칸이 상대
+    let f2 = ahead(ahead(free));
+    let x2 = ahead(ahead(off));
+    // 상대 1개(그 뒤가 비거나 판 밖): 내 줄 2개 또는 3개
+    let one = o1 & f2;
+    let p21 = own2 & one;
+    let p31 = own3 & one;
+    // 상대 2개: 내 줄 3개
+    let p32 = own3 & o2 & ahead(f2);
+    let count = (p21.count_ones() + p31.count_ones() + p32.count_ones()) as i32;
+    // 판 밖으로 밀리는 구슬: 상대 줄의 마지막 구슬
+    let targets = fwd((p21 | p31) & x2) | fwd(fwd(p32 & ahead(x2)));
     (count, targets)
 }
 
@@ -159,7 +175,10 @@ pub fn groups(m: u128) -> i32 {
 pub const OFF_BOARD_DISTANCE: i32 = 5;
 
 pub fn center_distance_sum(m: u128) -> i32 {
-    Bits(m).map(|s| CENTER_DIST[s as usize] as i32).sum()
+    // 거리별 고리 마스크로 센다 (칸마다 표를 찾는 것보다 빠르다)
+    (1..5)
+        .map(|k| k * (m & RINGS[k as usize]).count_ones() as i32)
+        .sum()
 }
 
 /// 한쪽 특징값. `pushes`/`my_targets` = c의 밀기 수와 밀어낼 수 있는 상대 구슬,

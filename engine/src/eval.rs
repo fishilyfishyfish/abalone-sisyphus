@@ -63,12 +63,52 @@ pub fn weights_by_name(name: &str) -> Option<Weights> {
 }
 
 /// 둘 차례 쪽 관점의 평가값 (승패 판정은 포함하지 않음).
+///
+/// 탐색에서 가장 많이 부르는 함수라, `score(diff)`와 정확히 같은 값을 특징값 구조체 없이 바로 센다.
+/// 가중치가 0인 특징은 세지 않는다. 같은 값인지는 `tests/search.rs`가 무작위 국면·여러 가중치로 확인한다.
 pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
-    // mobility 가중치가 0이면 세지 않는다 (점수는 같고 더 빠르다)
-    score(
-        &features::diff_opts(pos, pos.side, w.0[features::MOBILITY] != 0),
-        w,
-    )
+    use crate::board::{count_moves, EDGE};
+    use features::*;
+    let w = &w.0;
+    let me = pos.side.idx();
+    let them = 1 - me;
+    let (own, opp) = (pos.stones[me], pos.stones[them]);
+    let (pm, pt) = (pos.pushed[me] as i32, pos.pushed[them] as i32);
+    let cnt = |m: u128| m.count_ones() as i32;
+    let mut s = w[0] * (pm - pt);
+    if w[1] != 0 {
+        // 밀려난 구슬은 거리 OFF_BOARD_DISTANCE로 친다: 내 쪽은 상대가 밀어낸 수(pt)만큼
+        s += w[1]
+            * (center_distance_sum(own) + OFF_BOARD_DISTANCE * pt
+                - center_distance_sum(opp)
+                - OFF_BOARD_DISTANCE * pm);
+    }
+    if w[2] != 0 {
+        s += w[2] * (cohesion_pairs(own) - cohesion_pairs(opp));
+    }
+    if w[3] != 0 {
+        s += w[3] * (cnt(own & EDGE) - cnt(opp & EDGE));
+    }
+    if w[4] != 0 || w[5] != 0 || w[7] != 0 {
+        let (my_pushes, my_targets) = push_stats(own, opp);
+        let (their_pushes, their_targets) = push_stats(opp, own);
+        // endangered(나) = 상대가 밀어낼 수 있는 내 구슬, attackable(나) = 내가 밀어낼 수 있는 상대 구슬
+        let threat = cnt(their_targets) - cnt(my_targets);
+        s += w[4] * threat - w[5] * threat + w[7] * (my_pushes - their_pushes);
+    }
+    if w[6] != 0 {
+        s += w[6] * (cnt(own & !neighbor_mask(own)) - cnt(opp & !neighbor_mask(opp)));
+    }
+    if w[8] != 0 {
+        s += w[8] * (triples(own) - triples(opp));
+    }
+    if w[9] != 0 {
+        s += w[9] * (groups(own) - groups(opp));
+    }
+    if w[10] != 0 {
+        s += w[10] * (count_moves(own, opp).0 - count_moves(opp, own).0);
+    }
+    s
 }
 
 /// c 관점 평가값.
