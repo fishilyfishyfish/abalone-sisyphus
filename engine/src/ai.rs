@@ -39,16 +39,19 @@ impl Level {
                 max_depth: 1,
                 time_ms: 0.0,
                 exact_root: true,
+                prune: false,
             },
             Level::Normal => Limits {
                 max_depth: 3,
                 time_ms: 500.0,
                 exact_root: false,
+                prune: false,
             },
             Level::Hard => Limits {
                 max_depth: 30,
                 time_ms: 1500.0,
                 exact_root: false,
+                prune: false,
             },
         }
     }

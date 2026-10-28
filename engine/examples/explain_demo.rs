@@ -31,6 +31,7 @@ fn main() {
                 max_depth: 64,
                 time_ms: ms,
                 exact_root: false,
+                prune: false,
             };
             let a = explain::analyze(&g, m, &mut analyst, lim).unwrap();
             let pv = |l: &explain::Line| {

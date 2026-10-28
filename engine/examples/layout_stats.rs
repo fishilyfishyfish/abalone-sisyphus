@@ -24,6 +24,7 @@ fn limits(spec: &str) -> Limits {
             max_depth: 64,
             time_ms: t.parse().expect("ms"),
             exact_root: false,
+            prune: false,
         }
     } else {
         panic!("unknown setting {spec}")

@@ -33,6 +33,7 @@ fn parse_spec(spec: &str) -> (Limits, Weights) {
             max_depth: 64,
             time_ms: t.parse().expect("ms"),
             exact_root: false,
+            prune: false,
         }
     } else {
         panic!("spec must be d<depth> or t<ms>")

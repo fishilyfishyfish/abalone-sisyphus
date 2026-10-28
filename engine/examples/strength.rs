@@ -3,6 +3,7 @@
 //!
 //! 실행: cargo run --release --example strength -- <A> <B> [오프닝 쌍 수=20] [무작위 시작 수=4]
 //! 설정: random | easy | easy<점수 폭> (예 easy600) | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
+//! d·t 뒤에 p를 붙이면 가지치기(널 무브, LMR)를 쓴다: t500p, d6p
 //! 뒤에 @가중치를 붙이면 그 가중치로 둔다: d3@v0, t500@w:1000,-20,10,-15,-75,75,-30
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,8 +22,8 @@ enum Player {
     Random,
     Easy,
     EasyMargin(i32),
-    Depth(u32),
-    Time(f64),
+    Depth(u32, bool),
+    Time(f64, bool),
 }
 
 fn parse_spec(spec: &str) -> (Player, Weights) {
@@ -35,8 +36,14 @@ fn parse(s: &str) -> Player {
         "random" => Player::Random,
         "easy" => Player::Easy,
         _ if s.starts_with("easy") => Player::EasyMargin(s[4..].parse().expect("margin")),
-        _ if s.starts_with('d') => Player::Depth(s[1..].parse().expect("depth")),
-        _ if s.starts_with('t') => Player::Time(s[1..].parse().expect("ms")),
+        _ if s.starts_with('d') => {
+            let p = s.ends_with('p');
+            Player::Depth(s[1..s.len() - p as usize].parse().expect("depth"), p)
+        }
+        _ if s.starts_with('t') => {
+            let p = s.ends_with('p');
+            Player::Time(s[1..s.len() - p as usize].parse().expect("ms"), p)
+        }
         _ => panic!("unknown player {s}"),
     }
 }
@@ -46,14 +53,24 @@ fn pick(g: &Game, p: Player, s: &mut Searcher, rng: &mut Rng) -> Move {
         Player::Random => ai::choose(g, Level::Random, s, rng).unwrap().0,
         Player::Easy => ai::choose(g, Level::Easy, s, rng).unwrap().0,
         Player::EasyMargin(m) => ai::choose_easy(g, s, rng, m).unwrap().0,
-        Player::Depth(d) => s.search(g, Limits::depth(d)).best.unwrap(),
-        Player::Time(t) => s
+        Player::Depth(d, p) => s
+            .search(
+                g,
+                Limits {
+                    prune: p,
+                    ..Limits::depth(d)
+                },
+            )
+            .best
+            .unwrap(),
+        Player::Time(t, p) => s
             .search(
                 g,
                 Limits {
                     max_depth: 64,
                     time_ms: t,
                     exact_root: false,
+                    prune: p,
                 },
             )
             .best

@@ -585,6 +585,12 @@ impl Position {
         undo
     }
 
+    /// 한 수 쉬기 (탐색의 널 무브용). 두 번 부르면 원래대로 돌아온다.
+    pub fn make_null(&mut self) {
+        self.side = self.side.other();
+        self.hash ^= ZOBRIST_SIDE;
+    }
+
     pub fn unmake_move(&mut self, u: Undo) {
         self.side = self.side.other();
         let me = self.side.idx();

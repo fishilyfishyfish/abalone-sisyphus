@@ -23,6 +23,9 @@ pub struct Limits {
     pub time_ms: f64,
     /// 루트의 모든 수를 전체 창으로 탐색해 정확한 점수를 남긴다 (느리지만 수 비교·난이도 조절용).
     pub exact_root: bool,
+    /// PV가 아닌 노드에서 널 무브 가지치기와 늦은 수 줄이기(LMR)를 쓴다. 같은 시간에 더 깊이 보지만
+    /// 점수가 그 깊이의 미니맥스 값과 같다는 보장은 없어진다(루트 점수 = PV 끝 정적 평가는 그대로).
+    pub prune: bool,
 }
 
 impl Limits {
@@ -31,6 +34,17 @@ impl Limits {
             max_depth: d,
             time_ms: 0.0,
             exact_root: false,
+            prune: false,
+        }
+    }
+
+    /// 시간 제한 탐색 (깊이 제한 없음, 가지치기 사용). 컴퓨터가 수를 고를 때 쓴다.
+    pub fn time(ms: f64) -> Limits {
+        Limits {
+            max_depth: 64,
+            time_ms: ms,
+            exact_root: false,
+            prune: true,
         }
     }
 }
@@ -115,6 +129,7 @@ pub struct Searcher {
     path: Vec<u64>,
     base_ply: usize,
     move_limit: u32,
+    prune: bool,
     nodes: u64,
     stop: bool,
     can_stop: bool,
@@ -143,6 +158,7 @@ impl Searcher {
             path: Vec::new(),
             base_ply: 0,
             move_limit: 0,
+            prune: false,
             nodes: 0,
             stop: false,
             can_stop: false,
@@ -182,6 +198,7 @@ impl Searcher {
         self.path.extend_from_slice(game.hashes());
         self.base_ply = game.ply();
         self.move_limit = game.config.move_limit;
+        self.prune = lim.prune;
         self.history.iter_mut().for_each(|h| *h /= 8);
 
         let mut res = SearchResult::default();
@@ -240,11 +257,12 @@ impl Searcher {
                     -INF,
                     if exact { INF } else { -alpha },
                     true,
+                    true,
                 )
             } else {
-                let s = -self.negamax(pos, depth - 1, 1, -alpha - 1, -alpha, false);
+                let s = -self.negamax(pos, depth - 1, 1, -alpha - 1, -alpha, false, true);
                 if s > alpha && !self.stop {
-                    -self.negamax(pos, depth - 1, 1, -INF, -alpha, true)
+                    -self.negamax(pos, depth - 1, 1, -INF, -alpha, true, true)
                 } else {
                     s
                 }
@@ -333,6 +351,7 @@ impl Searcher {
         false
     }
 
+    #[allow(clippy::too_many_arguments)] // 탐색 상태를 구조체로 묶으면 재귀 호출마다 더 번거롭다
     fn negamax(
         &mut self,
         pos: &mut Position,
@@ -341,6 +360,7 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         pv_node: bool,
+        allow_null: bool,
     ) -> i32 {
         self.pv_len[ply] = ply;
         if let Some(s) = self.terminal(pos, ply) {
@@ -375,6 +395,29 @@ impl Searcher {
             }
         }
 
+        // 널 무브: 한 수 쉬어도(상대가 두 번 둬도) beta 이상이면 이 노드는 잘라도 된다.
+        // 아발론에는 "두지 않는 게 나은" 국면(추크추방)이 사실상 없어서 안전하다.
+        if self.prune
+            && !pv_node
+            && allow_null
+            && depth >= 3
+            && beta.abs() < WIN_BOUND
+            && eval::evaluate(pos, &self.weights) >= beta
+        {
+            let r = if depth >= 6 { 3 } else { 2 };
+            self.path.push(pos.hash);
+            pos.make_null();
+            let s = -self.negamax(pos, depth - 1 - r, ply + 1, -beta, -beta + 1, false, false);
+            pos.make_null();
+            self.path.pop();
+            if self.stop {
+                return 0;
+            }
+            if s >= beta {
+                return if s >= WIN_BOUND { beta } else { s };
+            }
+        }
+
         let mut moves = std::mem::take(&mut self.bufs[ply]);
         moves.clear();
         pos.legal_moves_into(&mut moves);
@@ -383,18 +426,48 @@ impl Searcher {
             return self.adjudicate(pos, ply);
         }
         self.order(pos, &mut moves, tt_move, ply);
+        let killers = self.killers[ply];
 
         self.path.push(pos.hash);
         let mut best = -INF;
         let mut best_move = None;
         for (i, &m) in moves.iter().enumerate() {
+            // 늦은 수 줄이기: 정렬상 뒤쪽의 조용한 수는 한두 수 얕게 먼저 보고, alpha를 넘으면 제 깊이로 다시 본다
+            let reduce = if self.prune && i >= 3 && depth >= 3 {
+                let quiet = pos
+                    .inline_kind(m)
+                    .is_none_or(|k| matches!(k, InlineResult::Step));
+                let p = pack(m);
+                if quiet && p != killers[0] && p != killers[1] {
+                    if i >= 12 && depth >= 5 {
+                        2
+                    } else {
+                        1
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
             let u = pos.make_move(m);
             let score = if i == 0 {
-                -self.negamax(pos, depth - 1, ply + 1, -beta, -alpha, pv_node)
+                -self.negamax(pos, depth - 1, ply + 1, -beta, -alpha, pv_node, true)
             } else {
-                let s = -self.negamax(pos, depth - 1, ply + 1, -alpha - 1, -alpha, false);
+                let mut s = -self.negamax(
+                    pos,
+                    depth - 1 - reduce,
+                    ply + 1,
+                    -alpha - 1,
+                    -alpha,
+                    false,
+                    true,
+                );
+                if reduce > 0 && s > alpha && !self.stop {
+                    s = -self.negamax(pos, depth - 1, ply + 1, -alpha - 1, -alpha, false, true);
+                }
                 if s > alpha && s < beta && pv_node && !self.stop {
-                    -self.negamax(pos, depth - 1, ply + 1, -beta, -alpha, true)
+                    -self.negamax(pos, depth - 1, ply + 1, -beta, -alpha, true, true)
                 } else {
                     s
                 }

@@ -168,6 +168,7 @@ fn exact_root_scores_match_minimax_per_move() {
                 max_depth: 2,
                 time_ms: 0.0,
                 exact_root: true,
+                prune: false,
             },
         );
         assert_eq!(res.root_scores.len(), g.legal_moves().len());
@@ -330,6 +331,7 @@ fn respects_time_limit() {
             max_depth: 30,
             time_ms: 100.0,
             exact_root: false,
+            prune: false,
         },
     );
     assert!(res.best.is_some());

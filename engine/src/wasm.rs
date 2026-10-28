@@ -167,5 +167,6 @@ fn timed(ms: f64) -> Limits {
         max_depth: 64,
         time_ms: ms,
         exact_root: false,
+        prune: false,
     }
 }
