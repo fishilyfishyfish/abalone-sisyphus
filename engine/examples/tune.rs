@@ -4,7 +4,7 @@
 //! 로지스틱 회귀로 맞추면 가중치가 나온다. 볼록 문제라 뉴턴법으로 바로 수렴한다.
 //!
 //! cargo run --release --example tune -- gen <판 수> <설정> <무작위 시작 수> <출력.csv> [시드]
-//!   설정은 strength와 같다 (예: d3@v0). 조용한 국면(둘 차례에 밀어내기 수가 없는 국면)만 기록.
+//!   설정은 strength와 같다 (예: d3@v0, 가지치기는 d5p). 조용한 국면(둘 차례에 밀어내기 수가 없는 국면)만 기록.
 //!   한 줄 = 둘 차례 관점 특징값 차이 7개, 둘 차례 관점 결과(1 / 0.5 / 0).
 //! cargo run --release --example tune -- fit <csv>... [비교할 가중치=default]
 //!   pushed_off 계수를 1000으로 맞춘 가중치를 낸다.
@@ -26,6 +26,11 @@ type Row = ([i32; NUM_FEATURES], f64);
 
 fn parse_spec(spec: &str) -> (Limits, Weights) {
     let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
+    // 끝에 p를 붙이면 가지치기 탐색 (예: d5p)
+    let (p, prune) = match p.strip_suffix('p') {
+        Some(q) => (q, true),
+        None => (p, false),
+    };
     let lim = if let Some(d) = p.strip_prefix('d') {
         Limits::depth(d.parse().expect("depth"))
     } else if let Some(t) = p.strip_prefix('t') {
@@ -38,6 +43,7 @@ fn parse_spec(spec: &str) -> (Limits, Weights) {
     } else {
         panic!("spec must be d<depth> or t<ms>")
     };
+    let lim = Limits { prune, ..lim };
     (lim, weights_by_name(w).expect("weights"))
 }
 
