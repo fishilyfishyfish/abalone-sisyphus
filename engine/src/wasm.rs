@@ -21,8 +21,8 @@ extern "C" {
     fn now() -> f64;
 }
 
-/// 브라우저 치환표 크기: 2^18칸 × 16바이트 = 4MB
-const TT_BITS: u32 = 18;
+/// 브라우저 치환표 크기: 2^20칸 × 16바이트 = 16MB (아주 어려움은 4초에 수백만 노드를 본다)
+const TT_BITS: u32 = 20;
 
 #[wasm_bindgen]
 pub struct WasmGame {

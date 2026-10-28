@@ -193,8 +193,15 @@ fn pv_end_evaluation_equals_root_score() {
     let mut s = searcher();
     let mut checked = 0;
     for g in random_games(5, 80, 90) {
-        for d in [1, 2, 3] {
-            let res = s.search(&g, Limits::depth(d));
+        // 가지치기를 켜도(PV가 아닌 노드만 줄이므로) 같은 성질이 성립해야 한다
+        for (d, prune) in [(1, false), (2, false), (3, false), (3, true), (5, true)] {
+            let res = s.search(
+                &g,
+                Limits {
+                    prune,
+                    ..Limits::depth(d)
+                },
+            );
             if res.score.abs() >= WIN_BOUND || res.score == 0 {
                 continue;
             }
@@ -211,13 +218,17 @@ fn pv_end_evaluation_equals_root_score() {
             } else {
                 -1
             };
-            assert_eq!(sign * eval::evaluate(&end, &W), res.score, "depth {d}");
+            assert_eq!(
+                sign * eval::evaluate(&end, &W),
+                res.score,
+                "depth {d} prune {prune}"
+            );
             // 같은 값을 루트 쪽 색 관점으로
             assert_eq!(eval::evaluate_for(&end, g.pos.side, &W), res.score);
             checked += 1;
         }
     }
-    assert!(checked > 150, "checked {checked}");
+    assert!(checked > 250, "checked {checked}");
 }
 
 fn pos(black: &[&str], white: &[&str], side: Color) -> Position {

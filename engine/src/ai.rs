@@ -13,8 +13,10 @@ pub enum Level {
     Easy,
     /// 깊이 3까지, 0.5초
     Normal,
-    /// 깊이 제한 없이 1.5초
+    /// 깊이 제한 없이 1.5초, 가지치기(널 무브·LMR) 사용
     Hard,
+    /// 깊이 제한 없이 4초, 가지치기 사용
+    Expert,
 }
 
 /// 쉬움 난이도에서 "그럭저럭 괜찮은 수"로 보는 점수 폭. 기본 가중치(v2)에서 처음 쉬움(v0, 폭 150)과
@@ -28,6 +30,7 @@ impl Level {
             "easy" => Some(Level::Easy),
             "normal" => Some(Level::Normal),
             "hard" => Some(Level::Hard),
+            "expert" => Some(Level::Expert),
             _ => None,
         }
     }
@@ -47,12 +50,8 @@ impl Level {
                 exact_root: false,
                 prune: false,
             },
-            Level::Hard => Limits {
-                max_depth: 30,
-                time_ms: 1500.0,
-                exact_root: false,
-                prune: false,
-            },
+            Level::Hard => Limits::time(1500.0),
+            Level::Expert => Limits::time(4000.0),
         }
     }
 }
@@ -86,7 +85,7 @@ pub fn choose(
             };
             Some((m, Some(res)))
         }
-        Level::Normal | Level::Hard => {
+        Level::Normal | Level::Hard | Level::Expert => {
             let res = searcher.search(game, level.limits());
             Some((res.best?, Some(res)))
         }

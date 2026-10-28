@@ -476,7 +476,7 @@ function renderPanel(st) {
     $(`count-${color}`).textContent = `${st.pushed[color]} / 6`;
     box.title = `${KO[color]}이 밀어낸 구슬 ${st.pushed[color]}개`;
     document.querySelector(`.score[data-color="${color}"]`).classList.toggle('active', st.outcome.status === 'ongoing' && st.side === color);
-    $(`tag-${color}`).textContent = ui.human === 'both' ? '' : ui.human === color ? '나' : `컴퓨터 · ${$('level').selectedOptions[0].textContent.split(' ')[0]}`;
+    $(`tag-${color}`).textContent = ui.human === 'both' ? '' : ui.human === color ? '나' : `컴퓨터 · ${LEVEL_KO[$('level').value]}`;
   }
 
   const banner = $('banner');
@@ -1274,7 +1274,7 @@ function renderReviewDetail() {
 // ---------------------------------------------------------------- 기보 (6단계)
 
 const LAYOUT_KO = { belgian: '벨지안 데이지', standard: '표준', german: '저먼 데이지' };
-const LEVEL_KO = { random: '아주 쉬움', easy: '쉬움', normal: '보통', hard: '어려움' };
+const LEVEL_KO = { random: '아주 쉬움', easy: '쉬움', normal: '보통', hard: '어려움', expert: '아주 어려움' };
 
 const RECORD_ERR = {
   unknown_layout: (r) => `배치 이름 "${r.value}"을 모르겠어요. belgian, standard, german 중 하나로 적어 주세요.`,
