@@ -39,3 +39,81 @@ pub fn residual(pos: &Position, diff: &[i32; NUM_FEATURES]) -> i32 {
             .sum::<f32>();
     out.round() as i32
 }
+
+/// 파일에서 읽은 신경망 (실험용: 학습한 가중치를 다시 빌드하지 않고 대국으로 비교할 때).
+/// 파일 형식은 `tools/nn/train.py`가 `.rs`와 같이 쓰는 `.txt`: 첫 줄 "은닉 입력",
+/// 다음 입력 수만큼 W1 행, 그다음 B1, W2, B2 한 줄씩(공백 구분).
+#[derive(Clone, Debug)]
+pub struct Net {
+    hidden: usize,
+    inputs: usize,
+    w1: Vec<f32>,
+    b1: Vec<f32>,
+    w2: Vec<f32>,
+    b2: f32,
+}
+
+impl Net {
+    pub fn load(path: &str) -> Result<Net, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut lines = text.lines();
+        let nums = |l: Option<&str>| -> Result<Vec<f32>, String> {
+            l.ok_or("unexpected end")?
+                .split_whitespace()
+                .map(|x| x.parse::<f32>().map_err(|e| e.to_string()))
+                .collect()
+        };
+        let head = nums(lines.next())?;
+        let (hidden, inputs) = (head[0] as usize, head[1] as usize);
+        if inputs != INPUTS {
+            return Err(format!("inputs {inputs} != {INPUTS}"));
+        }
+        let mut w1 = Vec::with_capacity(inputs * hidden);
+        for _ in 0..inputs {
+            w1.extend(nums(lines.next())?);
+        }
+        let b1 = nums(lines.next())?;
+        let w2 = nums(lines.next())?;
+        let b2 = nums(lines.next())?[0];
+        if w1.len() != inputs * hidden || b1.len() != hidden || w2.len() != hidden {
+            return Err("size mismatch".into());
+        }
+        Ok(Net {
+            hidden,
+            inputs,
+            w1,
+            b1,
+            w2,
+            b2,
+        })
+    }
+
+    /// `residual`과 같은 계산을 이 가중치로 한다.
+    pub fn residual(&self, pos: &Position, diff: &[i32; NUM_FEATURES]) -> i32 {
+        let h_n = self.hidden;
+        let mut h = self.b1.clone();
+        let mut add = |row: usize, x: f32| {
+            let r = &self.w1[row * h_n..(row + 1) * h_n];
+            for (hj, w) in h.iter_mut().zip(r) {
+                *hj += w * x;
+            }
+        };
+        for s in Bits(pos.own()) {
+            add(CELL_INDEX[s as usize] as usize, 1.0);
+        }
+        for s in Bits(pos.opp()) {
+            add(61 + CELL_INDEX[s as usize] as usize, 1.0);
+        }
+        for (f, &d) in diff.iter().take(self.inputs - 122).enumerate() {
+            if d != 0 {
+                add(122 + f, d as f32);
+            }
+        }
+        let out: f32 = self.b2
+            + h.iter()
+                .zip(self.w2.iter())
+                .map(|(&x, &w)| x.max(0.0) * w)
+                .sum::<f32>();
+        out.round() as i32
+    }
+}

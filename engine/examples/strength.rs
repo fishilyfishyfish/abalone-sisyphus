@@ -26,14 +26,24 @@ enum Player {
     Time(f64, bool),
 }
 
-/// (설정, 가중치, 보정 신경망 사용). 설정 끝의 n은 보정 신경망(예: t1500pn).
-fn parse_spec(spec: &str) -> (Player, Weights, bool) {
+/// (설정, 가중치, 보정 신경망 사용, 신경망 파일). 설정 끝의 n은 보정 신경망(예: t1500pn),
+/// 맨 끝 `#경로`는 내장 대신 그 파일의 신경망(예: t1500pn#/tmp/net.txt).
+fn parse_spec(spec: &str) -> (Player, Weights, bool, Option<String>) {
+    let (spec, net) = match spec.split_once('#') {
+        Some((a, b)) => (a, Some(b.to_string())),
+        None => (spec, None),
+    };
     let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
     let (p, nn) = match p.strip_suffix('n') {
         Some(q) => (q, true),
         None => (p, false),
     };
-    (parse(p), weights_by_name(w).expect("unknown weights"), nn)
+    (
+        parse(p),
+        weights_by_name(w).expect("unknown weights"),
+        nn,
+        net,
+    )
 }
 
 fn parse(s: &str) -> Player {
@@ -123,8 +133,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let a_spec = args.get(1).map_or("d3", |s| s).to_string();
     let b_spec = args.get(2).map_or("d2", |s| s).to_string();
-    let (a, wa_, na) = parse_spec(&a_spec);
-    let (b, wb_, nb) = parse_spec(&b_spec);
+    let (a, wa_, na, fa) = parse_spec(&a_spec);
+    let (b, wb_, nb, fb) = parse_spec(&b_spec);
+    let load = |f: &Option<String>| {
+        f.as_ref()
+            .map(|p| Arc::new(abalone_engine::nn::Net::load(p).expect("net file")))
+    };
+    let (neta, netb) = (load(&fa), load(&fb));
     let pairs: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
     let open_plies: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(4);
     let layouts = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy];
@@ -141,11 +156,14 @@ fn main() {
     let threads: Vec<_> = (0..4)
         .map(|t| {
             let (openings, next, results) = (openings.clone(), next.clone(), results.clone());
+            let (neta, netb) = (neta.clone(), netb.clone());
             std::thread::spawn(move || {
                 let mut sa = Searcher::with_std_clock(20, wa_);
                 let mut sb = Searcher::with_std_clock(20, wb_);
                 sa.nn = na;
                 sb.nn = nb;
+                sa.net = neta.clone();
+                sb.net = netb.clone();
                 let mut rng = Rng::new(1000 + t);
                 loop {
                     let job = next.fetch_add(1, Ordering::SeqCst);

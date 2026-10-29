@@ -27,9 +27,13 @@ type Row = ([i32; NUM_FEATURES], f64);
 /// gen이 모으는 한 국면: 특징값 차이, 결과, 둘 차례 쪽 구슬, 상대 구슬
 type PosRow = ([i32; NUM_FEATURES], f64, u128, u128);
 
-fn parse_spec(spec: &str) -> (Limits, Weights) {
+fn parse_spec(spec: &str) -> (Limits, Weights, bool) {
     let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
-    // 끝에 p를 붙이면 가지치기 탐색 (예: d5p)
+    // 끝에 n을 붙이면 보정 신경망(내장 가중치), 그 앞의 p는 가지치기 탐색 (예: d5p, d5pn)
+    let (p, nn) = match p.strip_suffix('n') {
+        Some(q) => (q, true),
+        None => (p, false),
+    };
     let (p, prune) = match p.strip_suffix('p') {
         Some(q) => (q, true),
         None => (p, false),
@@ -47,11 +51,11 @@ fn parse_spec(spec: &str) -> (Limits, Weights) {
         panic!("spec must be d<depth> or t<ms>")
     };
     let lim = Limits { prune, ..lim };
-    (lim, weights_by_name(w).expect("weights"))
+    (lim, weights_by_name(w).expect("weights"), nn)
 }
 
 fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64, with_board: bool) {
-    let (lim, w) = parse_spec(spec);
+    let (lim, w, nn) = parse_spec(spec);
     let layouts = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy];
     let next = Arc::new(AtomicUsize::new(0));
     let rows = Arc::new(Mutex::new(Vec::<PosRow>::new()));
@@ -63,6 +67,7 @@ fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64, with_b
             let (next, rows, outcomes) = (next.clone(), rows.clone(), outcomes.clone());
             std::thread::spawn(move || {
                 let mut s = Searcher::with_std_clock(20, w);
+                s.nn = nn;
                 loop {
                     let gi = next.fetch_add(1, Ordering::SeqCst);
                     if gi >= games {

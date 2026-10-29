@@ -10,6 +10,7 @@
 - 검증: 파일 뒤쪽 10%(대국 단위로 이어져 있다)를 떼어 둔다.
 
 사용: python3 -I tools/nn/train.py <out.rs> <csv>... [--hidden 32] [--epochs 6]
+같은 가중치를 <out>.txt로도 쓴다(엔진 `nn::Net::load`, strength의 `#경로`로 비교할 때).
 csv 한 줄 = 특징값 차이 11개, 둘 차례 쪽 구슬(16진), 상대 구슬(16진), 결과 (tune gen ... board).
 """
 import sys
@@ -173,7 +174,16 @@ def main():
         f.write('/// 은닉층 → 보정값(평가 점수 단위)\n')
         f.write('#[rustfmt::skip]\npub static W2: [f32; HIDDEN] = [' + ', '.join(f'{x * R_SCALE:.4}' for x in w2) + '];\n')
         f.write(f'pub const B2: f32 = {b2 * R_SCALE:.4};\n')
-    print('wrote', out)
+    # 같은 가중치를 텍스트로도 쓴다 (엔진 Net::load: 다시 빌드하지 않고 대국으로 비교할 때)
+    txt = out[:-3] + '.txt' if out.endswith('.rs') else out + '.txt'
+    with open(txt, 'w') as f:
+        f.write(f'{hidden} {din}\n')
+        for row in W1f:
+            f.write(' '.join(f'{x:.6}' for x in row) + '\n')
+        f.write(' '.join(f'{x:.6}' for x in b1) + '\n')
+        f.write(' '.join(f'{x * R_SCALE:.4}' for x in w2) + '\n')
+        f.write(f'{b2 * R_SCALE:.4}\n')
+    print('wrote', out, txt)
 
 
 if __name__ == '__main__':

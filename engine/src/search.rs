@@ -129,6 +129,8 @@ pub struct Searcher {
     pub weights: Weights,
     /// 평가에 보정 신경망을 더한다(`eval::evaluate_nn`). 바꾸면 `clear()`로 평가 캐시를 비워야 한다.
     pub nn: bool,
+    /// nn일 때 내장 가중치 대신 쓸 신경망 (실험·비교용). 바꾸면 `clear()`.
+    pub net: Option<std::sync::Arc<crate::nn::Net>>,
     tt: Vec<Entry>,
     killers: [[u16; 2]; MAX_PLY],
     history: Vec<i32>,
@@ -164,6 +166,7 @@ impl Searcher {
         Searcher {
             weights,
             nn: false,
+            net: None,
             tt: vec![Entry::default(); 1 << tt_bits],
             killers: [[0; 2]; MAX_PLY],
             history: vec![0; 121 * 6 * 3],
@@ -205,7 +208,10 @@ impl Searcher {
         if slot.0 == key {
             return slot.1;
         }
-        let v = if self.nn {
+        let v = if let (true, Some(net)) = (self.nn, &self.net) {
+            let d = crate::features::diff_opts(pos, pos.side, false);
+            eval::score(&d, &self.weights) + net.residual(pos, &d)
+        } else if self.nn {
             eval::evaluate_nn(pos, &self.weights)
         } else {
             eval::evaluate(pos, &self.weights)
