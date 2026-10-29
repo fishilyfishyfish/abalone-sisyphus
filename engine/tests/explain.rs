@@ -36,6 +36,36 @@ fn random_games(seed: u64, count: usize, max_plies: usize) -> Vec<Game> {
 }
 
 #[test]
+fn with_residual_network_contributions_plus_residual_equal_loss() {
+    // 보정 신경망을 켠 분석: 점수 = 끝 국면의 (선형 + 보정) 값, 선형 기여도 차이 합 + 보정 차이 = 손실
+    let mut s = searcher();
+    s.nn = true;
+    let mut rng = Rng::new(19);
+    let mut checked = 0;
+    let value = |p: &Position, c: Color| {
+        eval::evaluate_for(p, c, &DEFAULT_WEIGHTS) + eval::residual_for(p, c)
+    };
+    for g in random_games(43, 80, 80) {
+        let moves = g.legal_moves();
+        let played = moves[rng.below(moves.len())];
+        let a = explain::analyze(&g, played, &mut s, Limits::depth(3)).unwrap();
+        if a.best.score.abs() < WIN_BOUND {
+            assert_eq!(value(&a.best.end, a.mover), a.best.score);
+        }
+        match (a.contributions, a.residual) {
+            (Some(c), Some(r)) => {
+                assert_eq!(value(&a.played.end, a.mover), a.played.score);
+                assert_eq!(c.iter().sum::<i32>() + r, a.loss);
+                checked += 1;
+            }
+            (None, None) => {}
+            other => panic!("contributions and residual must come together: {other:?}"),
+        }
+    }
+    assert!(checked > 40, "checked {checked}");
+}
+
+#[test]
 fn contributions_sum_to_loss_and_scores_match_pv_ends() {
     let mut s = searcher();
     let mut rng = Rng::new(9);

@@ -556,6 +556,8 @@ const FEATURE_LABELS = {
   groups: '덩어리 수',
   mobility: '움직일 수 있는 수',
 };
+// 보정 신경망 몫: 특징별로 나눌 수 없는 형세 판단이라 한 줄로만 보여준다
+const RESIDUAL_LABEL = '신경망 형세 판단 (특징 밖)';
 
 const signed = (v) => (v > 0 ? `+${v}` : String(v));
 
@@ -572,8 +574,11 @@ function renderFeatures() {
   const rows = Object.entries(FEATURE_LABELS)
     .map(([k, label]) => `<tr><td>${label}</td><td>${f.black[k]}</td><td>${f.white[k]}</td><td>${ev.weights[k]}</td><td>${signed(ev.contrib_black[k])}</td></tr>`)
     .join('');
-  $('features').innerHTML = `<tr><th>특징값</th><th>흑</th><th>백</th><th>가중치</th><th>기여(흑)</th></tr>${rows}`;
-  $('eval-line').textContent = `정적 평가 ${signed(ev.score_black)} — ${scoreText(ev.score_black)}. 기여 = 가중치 × (흑 − 백).`;
+  const nnRow = ev.residual_black == null ? '' : `<tr><td>${RESIDUAL_LABEL}</td><td colspan="3">특징으로 나눌 수 없는 몫</td><td>${signed(ev.residual_black)}</td></tr>`;
+  $('features').innerHTML = `<tr><th>특징값</th><th>흑</th><th>백</th><th>가중치</th><th>기여(흑)</th></tr>${rows}${nnRow}`;
+  $('eval-line').textContent =
+    `정적 평가 ${signed(ev.score_black)} — ${scoreText(ev.score_black)}. 기여 = 가중치 × (흑 − 백)` +
+    (ev.residual_black == null ? '.' : ', 마지막 줄은 신경망 보정. 합 = 정적 평가.');
   const ls = ui.lastSearch;
   if (ls && ls.search) {
     const s = ls.search;
@@ -1260,7 +1265,7 @@ function renderReviewDetail() {
     ? Object.entries(a.contributions)
         .filter(([, v]) => v !== 0)
         .sort((x, y) => y[1] - x[1])
-        .map(([key, v]) => `<tr><td>${FEATURE_LABELS[key] || key}</td><td>${signed(v)}</td></tr>`)
+        .map(([key, v]) => `<tr><td>${key === 'residual' ? RESIDUAL_LABEL : FEATURE_LABELS[key] || key}</td><td>${signed(v)}</td></tr>`)
         .join('')
     : '';
   $('rv-engine').innerHTML =

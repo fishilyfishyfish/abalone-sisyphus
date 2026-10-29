@@ -102,6 +102,9 @@ pub struct MoveAnalysis {
     pub grade: Grade,
     /// 특징별 기여도 차이(최선 끝 − 둔 수 끝, 수 두는 쪽 관점). 승패 점수가 끼면 None.
     pub contributions: Option<[i32; NUM_FEATURES]>,
+    /// 보정 신경망 값의 차이(최선 끝 − 둔 수 끝, 수 두는 쪽 관점). 신경망을 쓰는 탐색일 때만 있다.
+    /// 있으면 `contributions` 합 + 이 값 = 손실.
+    pub residual: Option<i32>,
     pub reasons: Vec<Reason>,
     /// 반대 방향(둔 수가 최선 수보다 나은 쪽)의 기여도 중 큰 것 최대 2개. 구슬을 내준 대가로 얻은 것.
     /// 여기서 `played_value`는 최선 수 끝, `best_value`는 둔 수 끝 값이다(역할이 뒤바뀜).
@@ -202,6 +205,9 @@ pub fn analyze(
             &w,
         ))
     };
+    let residual = contributions.filter(|_| searcher.nn).map(|_| {
+        eval::residual_for(&best.end, mover) - eval::residual_for(&played_line.end, mover)
+    });
     let reasons = contributions
         .map(|c| pick_reasons(&c, &best, &played_line, &w, loss))
         .unwrap_or_default();
@@ -223,6 +229,7 @@ pub fn analyze(
         loss,
         grade,
         contributions,
+        residual,
         reasons,
         compensations,
         sentences: Vec::new(),
@@ -409,7 +416,21 @@ fn sentences(a: &MoveAnalysis, root: &Position) -> Vec<String> {
             }
         }
     }
-    if a.grade != Grade::Best && a.reasons.is_empty() && a.contributions.is_some() {
+    // 신경망 몫: 특징으로 나눌 수 없는 형세 판단이라 한 덩어리로만 말한다
+    let nn_part = a
+        .residual
+        .filter(|&r| r > 0 && r >= (a.loss * 15 / 100).max(20));
+    if let Some(r) = nn_part {
+        out.push(format!(
+            "정해진 특징 말고도, 엔진이 익힌 형세 판단으로 보면 최선 수가 구슬 {:.1}개만큼 더 좋아요.",
+            r as f64 / 1000.0
+        ));
+    }
+    if a.grade != Grade::Best
+        && a.reasons.is_empty()
+        && nn_part.is_none()
+        && a.contributions.is_some()
+    {
         out.push("어느 한 가지 이유보다 여러 작은 차이가 모인 결과예요.".to_string());
     }
     out
@@ -474,7 +495,12 @@ pub fn hint(game: &Game, searcher: &mut Searcher, lim: Limits) -> Option<Hint> {
         let f = features::compute(&game.pos);
         let now_line = Line {
             first: best.first,
-            score: eval::evaluate_for(&game.pos, mover, &searcher.weights),
+            score: eval::evaluate_for(&game.pos, mover, &searcher.weights)
+                + if searcher.nn {
+                    eval::residual_for(&game.pos, mover)
+                } else {
+                    0
+                },
             pv: Vec::new(),
             end: game.pos,
             mine: *f.side(mover),

@@ -21,13 +21,18 @@ extern "C" {
     fn now() -> f64;
 }
 
-/// 브라우저 치환표 크기: 2^20칸 × 16바이트 = 16MB (아주 어려움은 4초에 수백만 노드를 본다)
+/// 브라우저 치환표 크기. 강한 탐색기(어려움·아주 어려움·분석·힌트, 보정 신경망 사용)는 2^20칸 × 16바이트 = 16MB
+/// (아주 어려움은 4초에 수백만 노드를 본다). 쉬움·보통용 선형 탐색기는 얕게 보므로 2^18칸 = 4MB.
 const TT_BITS: u32 = 20;
+const TT_BITS_LINEAR: u32 = 18;
 
 #[wasm_bindgen]
 pub struct WasmGame {
     game: Game,
+    /// 쉬움·보통: 선형 평가만 (아이용으로 세기를 맞춘 난이도라 평가를 바꾸지 않는다)
     searcher: Searcher,
+    /// 어려움·아주 어려움과 수 분석·힌트: 선형 평가 + 보정 신경망
+    strong: Searcher,
 }
 
 #[wasm_bindgen]
@@ -42,7 +47,12 @@ impl WasmGame {
         };
         WasmGame {
             game: Game::new(config),
-            searcher: Searcher::new(TT_BITS, DEFAULT_WEIGHTS, Box::new(now)),
+            searcher: Searcher::new(TT_BITS_LINEAR, DEFAULT_WEIGHTS, Box::new(now)),
+            strong: {
+                let mut s = Searcher::new(TT_BITS, DEFAULT_WEIGHTS, Box::new(now));
+                s.nn = true;
+                s
+            },
         }
     }
 
@@ -85,7 +95,7 @@ impl WasmGame {
 
     /// 현재 국면의 흑 관점 평가와 특징별 기여도.
     pub fn evaluate(&self) -> String {
-        json::eval_json(&self.game.pos, &self.searcher.weights)
+        json::eval_json(&self.game.pos, &self.strong.weights, true)
     }
 
     /// 난이도("random" | "easy" | "normal" | "hard")에 맞는 수를 고른다. 두지는 않는다.
@@ -93,7 +103,11 @@ impl WasmGame {
     pub fn ai_move(&mut self, level: &str, seed: f64) -> String {
         let level = Level::parse(level).unwrap_or(Level::Random);
         let mut rng = Rng::new(seed.to_bits());
-        match ai::choose(&self.game, level, &mut self.searcher, &mut rng) {
+        let searcher = match level {
+            Level::Hard | Level::Expert => &mut self.strong,
+            _ => &mut self.searcher,
+        };
+        match ai::choose(&self.game, level, searcher, &mut rng) {
             None => "{\"move\":\"\",\"search\":null}".to_string(),
             Some((m, res)) => format!(
                 "{{\"move\":\"{}\",\"search\":{}}}",
@@ -118,7 +132,7 @@ impl WasmGame {
             return "null".to_string();
         };
         let before = self.game.prefix(ply);
-        match explain::analyze(&before, m, &mut self.searcher, timed(time_ms)) {
+        match explain::analyze(&before, m, &mut self.strong, timed(time_ms)) {
             Some(a) => json::analysis_json(&before.pos, &a),
             None => "null".to_string(),
         }
@@ -129,7 +143,7 @@ impl WasmGame {
         let Some(m) = parse_move(&self.game.pos, text) else {
             return "null".to_string();
         };
-        match explain::analyze(&self.game, m, &mut self.searcher, timed(time_ms)) {
+        match explain::analyze(&self.game, m, &mut self.strong, timed(time_ms)) {
             Some(a) => json::analysis_json(&self.game.pos, &a),
             None => "null".to_string(),
         }
@@ -149,13 +163,14 @@ impl WasmGame {
         if let Ok(rec) = &r {
             self.game = rec.game.clone();
             self.searcher.clear();
+            self.strong.clear();
         }
         json::record_result_json(&r)
     }
 
     /// 힌트: 지금 국면의 최선 수와 좋아지는 점.
     pub fn hint(&mut self, time_ms: f64) -> String {
-        match explain::hint(&self.game, &mut self.searcher, timed(time_ms)) {
+        match explain::hint(&self.game, &mut self.strong, timed(time_ms)) {
             Some(h) => json::hint_json(&self.game.pos, &h),
             None => "null".to_string(),
         }

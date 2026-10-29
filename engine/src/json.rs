@@ -204,8 +204,14 @@ pub fn search_json(pos: &Position, r: &SearchResult) -> String {
 }
 
 /// 현재 국면의 흑 관점 정적 평가와 특징별 기여도 (가중치 × 흑−백 차이).
-pub fn eval_json(pos: &Position, w: &Weights) -> String {
+/// nn이면 보정 신경망 값(흑 관점)을 `residual_black`으로 따로 주고 점수에 더한다.
+pub fn eval_json(pos: &Position, w: &Weights, nn: bool) -> String {
     let c = eval::contributions(pos, Color::Black, w);
+    let r = if nn {
+        eval::residual_for(pos, Color::Black)
+    } else {
+        0
+    };
     let field = |vals: &[i32]| -> String {
         let v: Vec<String> = FEATURE_NAMES
             .iter()
@@ -215,10 +221,15 @@ pub fn eval_json(pos: &Position, w: &Weights) -> String {
         format!("{{{}}}", v.join(","))
     };
     format!(
-        "{{\"score_black\":{},\"weights\":{},\"contrib_black\":{}}}",
-        c.iter().sum::<i32>(),
+        "{{\"score_black\":{},\"weights\":{},\"contrib_black\":{},\"residual_black\":{}}}",
+        c.iter().sum::<i32>() + r,
         field(&w.0),
-        field(&c)
+        field(&c),
+        if nn {
+            r.to_string()
+        } else {
+            "null".to_string()
+        }
     )
 }
 
@@ -266,11 +277,14 @@ fn reasons_json(rs: &[crate::explain::Reason]) -> String {
 pub fn analysis_json(root: &Position, a: &MoveAnalysis) -> String {
     let contrib = match a.contributions {
         Some(c) => {
-            let v: Vec<String> = FEATURE_NAMES
+            let mut v: Vec<String> = FEATURE_NAMES
                 .iter()
                 .zip(c)
                 .map(|(n, v)| format!("\"{n}\":{v}"))
                 .collect();
+            if let Some(r) = a.residual {
+                v.push(format!("\"residual\":{r}"));
+            }
             format!("{{{}}}", v.join(","))
         }
         None => "null".to_string(),

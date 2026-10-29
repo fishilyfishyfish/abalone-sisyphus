@@ -117,6 +117,18 @@ pub fn evaluate_nn(pos: &Position, w: &Weights) -> i32 {
     score(&d, w) + crate::nn::residual(pos, &d)
 }
 
+/// 보정 신경망 값의 c 관점(평가 점수 단위). 신경망은 둘 차례 관점으로 계산하므로 c가 상대면 부호를 바꾼다.
+/// 선형 기여도(`contributions`)와 더하면 `evaluate_nn`의 c 관점 값이 된다.
+pub fn residual_for(pos: &Position, c: Color) -> i32 {
+    let d = features::diff_opts(pos, pos.side, false);
+    let r = crate::nn::residual(pos, &d);
+    if pos.side == c {
+        r
+    } else {
+        -r
+    }
+}
+
 /// c 관점 평가값.
 pub fn evaluate_for(pos: &Position, c: Color, w: &Weights) -> i32 {
     score(&features::diff(pos, c), w)
