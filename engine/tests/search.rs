@@ -436,3 +436,46 @@ fn search_beats_random_player() {
         "engine should push off 6 against random every time"
     );
 }
+
+#[test]
+fn pondering_uses_the_whole_slice_and_keeps_pv_property() {
+    // 미리 생각하기는 다음 깊이를 미리 포기하지 않고 시간을 끝까지 쓴다
+    let g = Game::new(GameConfig::default());
+    let mut s = searcher();
+    let r = s.ponder(&g, 60.0, true);
+    assert!(r.elapsed_ms >= 60.0, "stopped early: {} ms", r.elapsed_ms);
+    assert!(r.best.is_some());
+
+    // 상대 차례에 미리 생각한 치환표를 이어받아도, 둔 뒤 탐색의 PV 성질은 그대로다
+    let mut checked = 0;
+    for g in random_games(41, 12, 60) {
+        let legal = g.legal_moves();
+        if legal.is_empty() {
+            continue;
+        }
+        for _ in 0..3 {
+            s.ponder(&g, 20.0, true);
+        }
+        let mut after = g.clone();
+        after.play_unchecked(legal[legal.len() / 2]);
+        if after.is_over() {
+            continue;
+        }
+        for prune in [false, true] {
+            let res = s.search(
+                &after,
+                Limits {
+                    prune,
+                    ..Limits::depth(4)
+                },
+            );
+            if res.score.abs() >= WIN_BOUND || res.score == 0 {
+                continue;
+            }
+            let end = play_line(&after.pos, &res.pv);
+            assert_eq!(eval::evaluate_for(&end, after.pos.side, &W), res.score);
+            checked += 1;
+        }
+    }
+    assert!(checked >= 15, "checked {checked}");
+}

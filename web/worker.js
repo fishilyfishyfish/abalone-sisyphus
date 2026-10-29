@@ -57,6 +57,9 @@ const handlers = {
   hint({ ms }) {
     return { ok: true, hint: JSON.parse(game.hint(ms)) };
   },
+  ponder({ ms }) {
+    return { ok: true, ponder: JSON.parse(game.ponder(ms)) };
+  },
   ai({ level }) {
     const r = JSON.parse(game.ai_move(level, Math.random() * 2 ** 52));
     return { ok: true, move: r.move, search: r.search };

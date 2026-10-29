@@ -229,6 +229,23 @@ impl Searcher {
     }
 
     pub fn search(&mut self, game: &Game, lim: Limits) -> SearchResult {
+        self.run(game, lim, false)
+    }
+
+    /// 상대가 생각하는 동안 미리 생각하기: 지금 국면(상대 차례)을 ms만큼 탐색해 치환표를 채운다.
+    /// 짧게 여러 번 불러도 이어지도록, 시간을 끝까지 쓰고(다음 깊이를 미리 포기하지 않음)
+    /// 수 정렬 기록도 줄이지 않는다. 중간에 끊긴 깊이도 끝낸 하위 탐색은 치환표에 남아 다음 조각이 이어받는다.
+    pub fn ponder(&mut self, game: &Game, ms: f64, prune: bool) -> SearchResult {
+        let lim = Limits {
+            max_depth: 64,
+            time_ms: ms,
+            exact_root: false,
+            prune,
+        };
+        self.run(game, lim, true)
+    }
+
+    fn run(&mut self, game: &Game, lim: Limits, ponder: bool) -> SearchResult {
         let start = (self.clock)();
         self.deadline = if lim.time_ms > 0.0 {
             start + lim.time_ms
@@ -242,7 +259,9 @@ impl Searcher {
         self.base_ply = game.ply();
         self.move_limit = game.config.move_limit;
         self.prune = lim.prune;
-        self.history.iter_mut().for_each(|h| *h /= 8);
+        if !ponder {
+            self.history.iter_mut().for_each(|h| *h /= 8);
+        }
 
         let mut res = SearchResult::default();
         let mut pos = game.pos;
@@ -261,7 +280,7 @@ impl Searcher {
             res.pv = self.pv[0][..self.pv_len[0]].to_vec();
             res.best = res.pv.first().copied();
             res.root_scores = scores;
-            if score.abs() >= WIN_BOUND || self.deadline_near(start) {
+            if score.abs() >= WIN_BOUND || (!ponder && self.deadline_near(start)) {
                 break;
             }
         }

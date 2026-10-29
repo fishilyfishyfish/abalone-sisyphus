@@ -120,6 +120,17 @@ impl WasmGame {
         }
     }
 
+    /// 사람이 생각하는 동안 컴퓨터(어려움·아주 어려움)가 미리 생각한다. 지금 국면을 ms만큼 탐색해
+    /// 보정 신경망 탐색기의 치환표를 채우고, 다음 컴퓨터 수가 그 결과를 이어받는다. 짧게 여러 번 부른다.
+    /// 결과: {"depth": 이번 조각에서 끝낸 깊이, "nodes": 노드 수}
+    pub fn ponder(&mut self, time_ms: f64) -> String {
+        if self.game.is_over() {
+            return "{\"depth\":0,\"nodes\":0}".to_string();
+        }
+        let r = self.strong.ponder(&self.game, time_ms, true);
+        format!("{{\"depth\":{},\"nodes\":{}}}", r.depth, r.nodes)
+    }
+
     /// 처음 ply수까지 둔 국면의 상태 (복기에서 그 수 직전 국면을 보여줄 때).
     pub fn state_at(&self, ply: u32) -> String {
         json::state_json(&self.game.prefix(ply as usize))

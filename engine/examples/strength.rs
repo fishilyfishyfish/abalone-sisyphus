@@ -5,6 +5,7 @@
 //! 설정: random | easy | easy<점수 폭> (예 easy600) | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
 //! d·t 뒤에 p를 붙이면 가지치기(널 무브, LMR)를 쓴다: t500p, d6p. 그 뒤에 n을 붙이면 보정 신경망: t500pn
 //! 뒤에 @가중치를 붙이면 그 가중치로 둔다: d3@v0, t500@w:1000,-20,10,-15,-75,75,-30
+//! 맨 끝에 +ms를 붙이면 상대 차례마다 그만큼 미리 생각한다(150ms 조각, 웹과 같은 방식): t1500pn+3000
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,12 +27,16 @@ enum Player {
     Time(f64, bool),
 }
 
-/// (설정, 가중치, 보정 신경망 사용, 신경망 파일). 설정 끝의 n은 보정 신경망(예: t1500pn),
+/// (설정, 가중치, 보정 신경망 사용, 신경망 파일, 미리 생각 ms). 설정 끝의 n은 보정 신경망(예: t1500pn),
 /// 맨 끝 `#경로`는 내장 대신 그 파일의 신경망(예: t1500pn#/tmp/net.txt).
-fn parse_spec(spec: &str) -> (Player, Weights, bool, Option<String>) {
+fn parse_spec(spec: &str) -> (Player, Weights, bool, Option<String>, f64) {
     let (spec, net) = match spec.split_once('#') {
         Some((a, b)) => (a, Some(b.to_string())),
         None => (spec, None),
+    };
+    let (spec, ponder) = match spec.split_once('+') {
+        Some((a, b)) => (a, b.parse().expect("ponder ms")),
+        None => (spec, 0.0),
     };
     let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
     let (p, nn) = match p.strip_suffix('n') {
@@ -43,7 +48,19 @@ fn parse_spec(spec: &str) -> (Player, Weights, bool, Option<String>) {
         weights_by_name(w).expect("unknown weights"),
         nn,
         net,
+        ponder,
     )
+}
+
+/// 상대가 생각하는 동안 미리 생각하기. 웹 워커처럼 짧은 조각으로 나눠 부른다.
+const PONDER_SLICE: f64 = 150.0;
+fn ponder(g: &Game, p: Player, s: &mut Searcher, ms: f64) {
+    let prune = matches!(p, Player::Time(_, true) | Player::Depth(_, true));
+    let mut left = ms;
+    while left > 0.0 {
+        s.ponder(g, left.min(PONDER_SLICE), prune);
+        left -= PONDER_SLICE;
+    }
 }
 
 fn parse(s: &str) -> Player {
@@ -63,34 +80,30 @@ fn parse(s: &str) -> Player {
     }
 }
 
-fn pick(g: &Game, p: Player, s: &mut Searcher, rng: &mut Rng) -> Move {
-    match p {
-        Player::Random => ai::choose(g, Level::Random, s, rng).unwrap().0,
-        Player::Easy => ai::choose(g, Level::Easy, s, rng).unwrap().0,
-        Player::EasyMargin(m) => ai::choose_easy(g, s, rng, m).unwrap().0,
-        Player::Depth(d, p) => s
-            .search(
-                g,
-                Limits {
-                    prune: p,
-                    ..Limits::depth(d)
-                },
-            )
-            .best
-            .unwrap(),
-        Player::Time(t, p) => s
-            .search(
-                g,
-                Limits {
-                    max_depth: 64,
-                    time_ms: t,
-                    exact_root: false,
-                    prune: p,
-                },
-            )
-            .best
-            .unwrap(),
-    }
+/// (수, 도달 깊이). 깊이는 탐색하는 설정만 (나머지는 0)
+fn pick(g: &Game, p: Player, s: &mut Searcher, rng: &mut Rng) -> (Move, u32) {
+    let r = match p {
+        Player::Random => return (ai::choose(g, Level::Random, s, rng).unwrap().0, 0),
+        Player::Easy => return (ai::choose(g, Level::Easy, s, rng).unwrap().0, 0),
+        Player::EasyMargin(m) => return (ai::choose_easy(g, s, rng, m).unwrap().0, 0),
+        Player::Depth(d, p) => s.search(
+            g,
+            Limits {
+                prune: p,
+                ..Limits::depth(d)
+            },
+        ),
+        Player::Time(t, p) => s.search(
+            g,
+            Limits {
+                max_depth: 64,
+                time_ms: t,
+                exact_root: false,
+                prune: p,
+            },
+        ),
+    };
+    (r.best.unwrap(), r.depth)
 }
 
 /// 무작위 시작 수순 (밀어내기는 피한다)
@@ -127,14 +140,16 @@ struct GameResult {
     plies: usize,
     pushed_a: u32,
     pushed_b: u32,
+    /// A가 탐색한 수의 (도달 깊이 합, 수 개수)
+    depth_a: (u64, u64),
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let a_spec = args.get(1).map_or("d3", |s| s).to_string();
     let b_spec = args.get(2).map_or("d2", |s| s).to_string();
-    let (a, wa_, na, fa) = parse_spec(&a_spec);
-    let (b, wb_, nb, fb) = parse_spec(&b_spec);
+    let (a, wa_, na, fa, pa_ms) = parse_spec(&a_spec);
+    let (b, wb_, nb, fb, pb_ms) = parse_spec(&b_spec);
     let load = |f: &Option<String>| {
         f.as_ref()
             .map(|p| Arc::new(abalone_engine::nn::Net::load(p).expect("net file")))
@@ -185,11 +200,21 @@ fn main() {
                     }
                     sa.clear();
                     sb.clear();
+                    let mut depth_a = (0, 0);
                     while !g.is_over() {
                         let m = if g.pos.side == a_color {
-                            pick(&g, a, &mut sa, &mut rng)
+                            if pb_ms > 0.0 {
+                                ponder(&g, b, &mut sb, pb_ms);
+                            }
+                            let (m, d) = pick(&g, a, &mut sa, &mut rng);
+                            depth_a.0 += d as u64;
+                            depth_a.1 += 1;
+                            m
                         } else {
-                            pick(&g, b, &mut sb, &mut rng)
+                            if pa_ms > 0.0 {
+                                ponder(&g, a, &mut sa, pa_ms);
+                            }
+                            pick(&g, b, &mut sb, &mut rng).0
                         };
                         g.play_unchecked(m);
                     }
@@ -201,6 +226,7 @@ fn main() {
                         plies: g.ply(),
                         pushed_a: g.pos.pushed_off_by(a_color),
                         pushed_b: g.pos.pushed_off_by(a_color.other()),
+                        depth_a,
                     });
                 }
             })
@@ -213,6 +239,7 @@ fn main() {
     res.sort_by_key(|r| r.idx);
     let (mut w, mut d, mut l) = (0, 0, 0);
     let (mut pa, mut pb, mut plies) = (0, 0, 0);
+    let (mut dsum, mut dn) = (0, 0);
     let mut reasons = std::collections::BTreeMap::new();
     for r in &res {
         let tag = match r.outcome {
@@ -235,6 +262,8 @@ fn main() {
         };
         pa += r.pushed_a;
         pb += r.pushed_b;
+        dsum += r.depth_a.0;
+        dn += r.depth_a.1;
         plies += r.plies;
         println!(
             "game {:>3} {:<9} A={:?}: {tag:<20} {:>3} plies, pushed {}:{}",
@@ -250,12 +279,13 @@ fn main() {
     let s = (w as f64 + d as f64 / 2.0) / n;
     let se = (s * (1.0 - s) / n).sqrt().max(0.5 / n);
     println!(
-        "{a_spec} vs {b_spec}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}",
+        "{a_spec} vs {b_spec}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}  A avg depth {:.2}",
         s * 100.0,
         elo(s, n),
         elo(s - 1.96 * se, n),
         elo(s + 1.96 * se, n),
         plies as f64 / n,
-        reasons
+        reasons,
+        dsum as f64 / dn.max(1) as f64
     );
 }

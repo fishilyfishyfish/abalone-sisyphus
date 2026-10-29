@@ -13,6 +13,10 @@ const MOVE_MS = 280;
 const CANDIDATE_MS = 300; // 친절 모드: 두기 전에 수를 분석하는 시간
 const HINT_MS = 700;
 const REVIEW_MS = 250; // 복기: 수마다 분석 시간
+// 미리 생각하기: 내 차례에 어려움·아주 어려움 컴퓨터가 이 조각만큼씩 이어서 생각한다.
+// 조각 사이에 다른 요청(선택지, 분석)이 끼어들 수 있어서 조작이 늦어져도 조각 하나만큼이다.
+const PONDER_SLICE_MS = 150;
+const PONDER_MAX_MS = 30000; // 한 국면에서 이만큼 생각하면 멈춘다(태블릿 배터리)
 
 // 정규 칸 순서 (행 오름차순, 사선 오름차순) — 엔진의 CELLS와 같다
 const CELLS = [];
@@ -64,6 +68,7 @@ const ui = {
   features: null,
   evaluation: null,
   lastSearch: null, // { color, ply, search }
+  ponder: { running: false, ply: -1, ms: 0, depth: 0 }, // 미리 생각하기 (국면 = 기보 길이)
   singles: {}, // 정규 칸 번호 → 방향별 선택지. 움직일 수 있는 구슬을 빛내는 데만 쓴다
   selection: [], // 정규 칸 번호
   options: null, // 지금 선택에 대한 방향별 선택지
@@ -584,7 +589,8 @@ function renderFeatures() {
     const s = ls.search;
     $('search-line').textContent =
       `${ui.state.history.length - ls.ply === 1 ? '방금' : `${ls.ply + 1}수째`} 컴퓨터(${KO[ls.color]}) 탐색: 깊이 ${s.depth}, ` +
-      `${s.nodes.toLocaleString()}노드, ${s.ms}ms, 점수 ${signed(s.score_black)}(흑 기준). 주 변화: ${s.pv.join(' ')}`;
+      `${s.nodes.toLocaleString()}노드, ${s.ms}ms, 점수 ${signed(s.score_black)}(흑 기준). 주 변화: ${s.pv.join(' ')}` +
+      (ls.pondered && ls.pondered.ms > 0 ? `. 그 전 내 차례에 미리 ${(ls.pondered.ms / 1000).toFixed(1)}초 생각(깊이 ${ls.pondered.depth}).` : '');
   } else {
     $('search-line').textContent = '';
   }
@@ -995,11 +1001,41 @@ async function playHuman(m) {
   maybeAi();
 }
 
+function shouldPonder() {
+  const st = ui.state;
+  return ui.mode === 'play' && $('ponder').checked && st && st.outcome.status === 'ongoing' &&
+    ui.human !== 'both' && st.side === ui.human && ['hard', 'expert'].includes($('level').value) &&
+    !document.hidden;
+}
+
+/** 내 차례 동안 컴퓨터가 지금 국면을 조각조각 이어서 탐색한다. 결과는 엔진 치환표에 남아 다음 컴퓨터 수가 쓴다. */
+async function ponderLoop() {
+  if (ui.ponder.running) return;
+  ui.ponder.running = true;
+  try {
+    while (shouldPonder()) {
+      const ply = ui.state.history.length;
+      if (ui.ponder.ply !== ply) ui.ponder = { running: true, ply, ms: 0, depth: 0 };
+      if (ui.ponder.ms >= PONDER_MAX_MS) break;
+      const r = await call('ponder', { ms: PONDER_SLICE_MS });
+      if (ui.ponder.ply === ply && ui.state.history.length === ply) {
+        ui.ponder.ms += PONDER_SLICE_MS;
+        ui.ponder.depth = Math.max(ui.ponder.depth, r.ponder.depth);
+      }
+    }
+  } catch (e) {
+    // 미리 생각하기는 보조 기능이라 실패해도 대국은 그대로 둔다
+  } finally {
+    ui.ponder.running = false;
+  }
+}
+
 function maybeAi() {
   if (ui.mode !== 'play') return;
   const st = ui.state;
   if (!st || st.outcome.status !== 'ongoing' || ui.human === 'both' || st.side === ui.human) {
     if (st && st.outcome.status !== 'ongoing') idleMessage();
+    ponderLoop();
     return;
   }
   const token = ++ui.aiToken;
@@ -1011,9 +1047,11 @@ function maybeAi() {
     try {
       const color = ui.state.side;
       const ply = ui.state.history.length;
+      // 바로 앞 내 차례에 미리 생각한 시간 (기보 길이가 한 수 차이일 때만 그 국면에서 이어진 것)
+      const pondered = ui.ponder.ply === ply - 1 ? { ms: ui.ponder.ms, depth: ui.ponder.depth } : null;
       const r = await call('ai', { level: $('level').value });
       if (token !== ui.aiToken || !r.move || ui.mode !== 'play') return;
-      ui.lastSearch = { color, ply, search: r.search };
+      ui.lastSearch = { color, ply, search: r.search, pondered };
       const pushedBefore = ui.state.pushed;
       const res = await call('play', { text: r.move });
       if (token !== ui.aiToken) return;
@@ -1031,6 +1069,7 @@ function maybeAi() {
 
 async function undo() {
   ui.aiToken++; // 진행 중인 컴퓨터 수 취소
+  ui.ponder.ply = -1;
   $('feedback').hidden = true;
   ui.busy = true;
   try {
@@ -1052,6 +1091,7 @@ async function newGame() {
   ui.aiToken++;
   ui.human = $('human').value;
   ui.lastSearch = null;
+  ui.ponder.ply = -1;
   ui.grades = {};
   ui.review = { cache: {}, cur: -1, token: ui.review.token + 1, board: null };
   ui.mode = 'play';
@@ -1336,6 +1376,7 @@ async function loadRecord() {
   ui.loadedTags = r.tags;
   ui.counted = true;
   ui.lastSearch = null;
+  ui.ponder.ply = -1;
   ui.grades = {};
   ui.review = { cache: {}, cur: -1, token: ui.review.token + 1, board: null };
   ui.mode = 'play';
@@ -1565,7 +1606,12 @@ $('friendly').addEventListener('change', () => {
   ui.hint = null;
   render();
 });
-$('level').addEventListener('change', () => ui.state && renderPanel(ui.state)); // 다음 컴퓨터 수부터 적용
+$('level').addEventListener('change', () => {
+  if (ui.state) renderPanel(ui.state); // 다음 컴퓨터 수부터 적용
+  ponderLoop();
+});
+$('ponder').addEventListener('change', () => ponderLoop());
+document.addEventListener('visibilitychange', () => ponderLoop());
 $('clear').addEventListener('click', () => select([]));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') select([]);
