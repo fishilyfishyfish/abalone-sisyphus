@@ -742,3 +742,72 @@ pub fn play_line(pos: &Position, line: &[Move]) -> Position {
     }
     p
 }
+
+/// 미리 생각할 상대 수: 깊이 2 정확한 점수가 최선보다 이만큼 이내인 수만 (가망 없는 수는 상대가 안 둔다고 본다)
+pub const PONDER_MARGIN: i32 = 500;
+/// 미리 생각할 상대 수의 최대 개수
+pub const PONDER_MOVES: usize = 6;
+
+/// 상대 차례에 미리 생각하기. 상대가 둘 만한 수 몇 개(`PONDER_MOVES`, 최선과 `PONDER_MARGIN` 이내)를 고르고,
+/// 그 수를 둔 뒤 국면(내 차례)을 조각마다 돌아가며 탐색한다. 상대가 그중 하나를 두면
+/// 다음 탐색의 루트가 미리 본 국면 그대로라 치환표를 온전히 이어받는다.
+#[derive(Default)]
+pub struct Ponder {
+    /// 후보를 고른 국면 (해시, 수 번호). 바뀌면 후보를 다시 고른다
+    key: Option<(u64, usize)>,
+    pub moves: Vec<Move>,
+    next: usize,
+}
+
+impl Ponder {
+    pub fn new() -> Ponder {
+        Ponder::default()
+    }
+
+    /// 조각 하나 (ms). 국면이 바뀌었으면 먼저 후보를 고른다. 결과는 이번 조각에서 본 후보 국면의 탐색 결과.
+    pub fn slice(
+        &mut self,
+        s: &mut Searcher,
+        game: &Game,
+        ms: f64,
+        prune: bool,
+    ) -> Option<SearchResult> {
+        if game.is_over() {
+            return None;
+        }
+        let key = (game.pos.hash, game.ply());
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.next = 0;
+            let r = s.search(
+                game,
+                Limits {
+                    max_depth: 2,
+                    time_ms: 0.0,
+                    exact_root: true,
+                    prune: false,
+                },
+            );
+            let mut scored = r.root_scores;
+            scored.sort_by_key(|x| std::cmp::Reverse(x.1));
+            let best = scored.first().map_or(0, |x| x.1);
+            self.moves = scored
+                .iter()
+                .take_while(|x| x.1 >= best.saturating_sub(PONDER_MARGIN))
+                .take(PONDER_MOVES)
+                .map(|x| x.0)
+                .collect();
+        }
+        // 후보를 둬서 끝나는 수(내가 지는 수)는 볼 것이 없다
+        for _ in 0..self.moves.len() {
+            let m = self.moves[self.next % self.moves.len()];
+            self.next += 1;
+            let mut child = game.clone();
+            child.play_unchecked(m);
+            if !child.is_over() {
+                return Some(s.ponder(&child, ms, prune));
+            }
+        }
+        None
+    }
+}

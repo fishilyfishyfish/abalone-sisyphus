@@ -13,7 +13,7 @@ use crate::notation::{move_to_string, parse_move};
 use crate::record;
 use crate::rng::Rng;
 use crate::search::Limits;
-use crate::search::Searcher;
+use crate::search::{Ponder, Searcher};
 
 #[wasm_bindgen]
 extern "C" {
@@ -33,6 +33,8 @@ pub struct WasmGame {
     searcher: Searcher,
     /// 어려움·아주 어려움과 수 분석·힌트: 선형 평가 + 보정 신경망
     strong: Searcher,
+    /// 사람 차례에 미리 생각할 사람 수 후보와 순서
+    ponder: Ponder,
 }
 
 #[wasm_bindgen]
@@ -53,6 +55,7 @@ impl WasmGame {
                 s.nn = true;
                 s
             },
+            ponder: Ponder::new(),
         }
     }
 
@@ -120,15 +123,25 @@ impl WasmGame {
         }
     }
 
-    /// 사람이 생각하는 동안 컴퓨터(어려움·아주 어려움)가 미리 생각한다. 지금 국면을 ms만큼 탐색해
-    /// 보정 신경망 탐색기의 치환표를 채우고, 다음 컴퓨터 수가 그 결과를 이어받는다. 짧게 여러 번 부른다.
-    /// 결과: {"depth": 이번 조각에서 끝낸 깊이, "nodes": 노드 수}
+    /// 사람이 생각하는 동안 컴퓨터(어려움·아주 어려움)가 미리 생각한다. 사람이 둘 만한 수 몇 개를 고르고
+    /// 그 뒤 국면을 조각마다 돌아가며 ms만큼 탐색해 보정 신경망 탐색기의 치환표를 채운다. 짧게 여러 번 부른다.
+    /// 결과: {"depth": 이번 조각에서 끝낸 깊이, "nodes": 노드 수, "candidates": [미리 생각하는 사람 수 표기]}
     pub fn ponder(&mut self, time_ms: f64) -> String {
-        if self.game.is_over() {
-            return "{\"depth\":0,\"nodes\":0}".to_string();
-        }
-        let r = self.strong.ponder(&self.game, time_ms, true);
-        format!("{{\"depth\":{},\"nodes\":{}}}", r.depth, r.nodes)
+        let r = self
+            .ponder
+            .slice(&mut self.strong, &self.game, time_ms, true);
+        let cands: Vec<String> = self
+            .ponder
+            .moves
+            .iter()
+            .map(|&m| format!("\"{}\"", move_to_string(m)))
+            .collect();
+        format!(
+            "{{\"depth\":{},\"nodes\":{},\"candidates\":[{}]}}",
+            r.as_ref().map_or(0, |r| r.depth),
+            r.as_ref().map_or(0, |r| r.nodes),
+            cands.join(",")
+        )
     }
 
     /// 처음 ply수까지 둔 국면의 상태 (복기에서 그 수 직전 국면을 보여줄 때).

@@ -6,7 +6,9 @@ use abalone_engine::game::{Game, GameConfig};
 use abalone_engine::layouts::{mask_of, Layout};
 use abalone_engine::notation::{move_to_string, parse_move};
 use abalone_engine::rng::Rng;
-use abalone_engine::search::{play_line, Limits, Searcher, QS_DEPTH};
+use abalone_engine::search::{
+    play_line, Limits, Ponder, Searcher, PONDER_MARGIN, PONDER_MOVES, QS_DEPTH,
+};
 
 const W: eval::Weights = DEFAULT_WEIGHTS;
 
@@ -478,4 +480,57 @@ fn pondering_uses_the_whole_slice_and_keeps_pv_property() {
         }
     }
     assert!(checked >= 15, "checked {checked}");
+}
+
+#[test]
+fn ponder_candidates_are_plausible_and_reused() {
+    let mut s = searcher();
+    let mut checked = 0;
+    for g in random_games(43, 10, 50) {
+        if g.is_over() {
+            continue;
+        }
+        let mut pd = Ponder::new();
+        for _ in 0..4 {
+            pd.slice(&mut s, &g, 15.0, true);
+        }
+        // 후보는 합법이고, 최대 개수 이내이며, 깊이 2 정확한 점수로 최선과 PONDER_MARGIN 이내다
+        assert!(!pd.moves.is_empty() && pd.moves.len() <= PONDER_MOVES);
+        let exact = searcher().search(
+            &g,
+            Limits {
+                exact_root: true,
+                ..Limits::depth(2)
+            },
+        );
+        let best = exact.root_scores.iter().map(|x| x.1).max().unwrap();
+        for m in &pd.moves {
+            let sc = exact.root_scores.iter().find(|x| x.0 == *m).unwrap().1;
+            assert!(
+                sc >= best - PONDER_MARGIN,
+                "{} {sc} vs {best}",
+                move_to_string(*m)
+            );
+        }
+        // 후보 하나를 둔 뒤 탐색해도 PV 성질은 그대로다
+        let mut after = g.clone();
+        after.play_unchecked(pd.moves[0]);
+        if after.is_over() {
+            continue;
+        }
+        let res = s.search(
+            &after,
+            Limits {
+                prune: true,
+                ..Limits::depth(4)
+            },
+        );
+        if res.score.abs() >= WIN_BOUND || res.score == 0 {
+            continue;
+        }
+        let end = play_line(&after.pos, &res.pv);
+        assert_eq!(eval::evaluate_for(&end, after.pos.side, &W), res.score);
+        checked += 1;
+    }
+    assert!(checked >= 5, "checked {checked}");
 }

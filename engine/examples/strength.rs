@@ -16,7 +16,7 @@ use abalone_engine::eval::{weights_by_name, Weights};
 use abalone_engine::game::{Game, GameConfig, Outcome};
 use abalone_engine::layouts::Layout;
 use abalone_engine::rng::Rng;
-use abalone_engine::search::{Limits, Searcher};
+use abalone_engine::search::{Limits, Ponder, Searcher};
 
 #[derive(Clone, Copy, Debug)]
 enum Player {
@@ -54,11 +54,11 @@ fn parse_spec(spec: &str) -> (Player, Weights, bool, Option<String>, f64) {
 
 /// 상대가 생각하는 동안 미리 생각하기. 웹 워커처럼 짧은 조각으로 나눠 부른다.
 const PONDER_SLICE: f64 = 150.0;
-fn ponder(g: &Game, p: Player, s: &mut Searcher, ms: f64) {
+fn ponder(g: &Game, p: Player, s: &mut Searcher, pd: &mut Ponder, ms: f64) {
     let prune = matches!(p, Player::Time(_, true) | Player::Depth(_, true));
     let mut left = ms;
     while left > 0.0 {
-        s.ponder(g, left.min(PONDER_SLICE), prune);
+        pd.slice(s, g, left.min(PONDER_SLICE), prune);
         left -= PONDER_SLICE;
     }
 }
@@ -142,6 +142,8 @@ struct GameResult {
     pushed_b: u32,
     /// A가 탐색한 수의 (도달 깊이 합, 수 개수)
     depth_a: (u64, u64),
+    /// A가 미리 생각할 때 상대 수가 후보 안에 있었던 (횟수, 전체)
+    hits_a: (u64, u64),
 }
 
 fn main() {
@@ -201,20 +203,25 @@ fn main() {
                     sa.clear();
                     sb.clear();
                     let mut depth_a = (0, 0);
+                    let mut hits_a = (0, 0);
+                    let (mut pda, mut pdb) = (Ponder::new(), Ponder::new());
                     while !g.is_over() {
                         let m = if g.pos.side == a_color {
                             if pb_ms > 0.0 {
-                                ponder(&g, b, &mut sb, pb_ms);
+                                ponder(&g, b, &mut sb, &mut pdb, pb_ms);
                             }
                             let (m, d) = pick(&g, a, &mut sa, &mut rng);
                             depth_a.0 += d as u64;
                             depth_a.1 += 1;
                             m
                         } else {
+                            let m = pick(&g, b, &mut sb, &mut rng).0;
                             if pa_ms > 0.0 {
-                                ponder(&g, a, &mut sa, pa_ms);
+                                ponder(&g, a, &mut sa, &mut pda, pa_ms);
+                                hits_a.0 += pda.moves.contains(&m) as u64;
+                                hits_a.1 += 1;
                             }
-                            pick(&g, b, &mut sb, &mut rng).0
+                            m
                         };
                         g.play_unchecked(m);
                     }
@@ -227,6 +234,7 @@ fn main() {
                         pushed_a: g.pos.pushed_off_by(a_color),
                         pushed_b: g.pos.pushed_off_by(a_color.other()),
                         depth_a,
+                        hits_a,
                     });
                 }
             })
@@ -240,6 +248,7 @@ fn main() {
     let (mut w, mut d, mut l) = (0, 0, 0);
     let (mut pa, mut pb, mut plies) = (0, 0, 0);
     let (mut dsum, mut dn) = (0, 0);
+    let (mut hit, mut hn) = (0, 0);
     let mut reasons = std::collections::BTreeMap::new();
     for r in &res {
         let tag = match r.outcome {
@@ -264,6 +273,8 @@ fn main() {
         pb += r.pushed_b;
         dsum += r.depth_a.0;
         dn += r.depth_a.1;
+        hit += r.hits_a.0;
+        hn += r.hits_a.1;
         plies += r.plies;
         println!(
             "game {:>3} {:<9} A={:?}: {tag:<20} {:>3} plies, pushed {}:{}",
@@ -279,7 +290,7 @@ fn main() {
     let s = (w as f64 + d as f64 / 2.0) / n;
     let se = (s * (1.0 - s) / n).sqrt().max(0.5 / n);
     println!(
-        "{a_spec} vs {b_spec}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}  A avg depth {:.2}",
+        "{a_spec} vs {b_spec}: +{w} ={d} -{l}  score {:.1}%  Elo {:+.0} (95%: {:+.0} ~ {:+.0})  pushed {pa}:{pb}  avg {:.0} plies  ends {:?}  A avg depth {:.2}  A ponder hits {hit}/{hn}",
         s * 100.0,
         elo(s, n),
         elo(s - 1.96 * se, n),
