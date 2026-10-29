@@ -5,7 +5,8 @@
 //!
 //! cargo run --release --example tune -- gen <판 수> <설정> <무작위 시작 수> <출력.csv> [시드]
 //!   설정은 strength와 같다 (예: d3@v0, 가지치기는 d5p). 조용한 국면(둘 차례에 밀어내기 수가 없는 국면)만 기록.
-//!   한 줄 = 둘 차례 관점 특징값 차이 7개, 둘 차례 관점 결과(1 / 0.5 / 0).
+//!   한 줄 = 둘 차례 관점 특징값 차이, 둘 차례 관점 결과(1 / 0.5 / 0).
+//!   끝에 board를 붙이면(시드 다음) 결과 앞에 둘 차례 쪽·상대 구슬 비트(16진)도 쓴다 (신경망 학습용, tools/nn).
 //! cargo run --release --example tune -- fit <csv>... [비교할 가중치=default]
 //!   pushed_off 계수를 1000으로 맞춘 가중치를 낸다.
 //!   endangered/attackable는 차이로 보면 정확히 부호만 반대라 한 계수로 맞추고 반씩 나눈다.
@@ -23,6 +24,8 @@ use abalone_engine::rng::Rng;
 use abalone_engine::search::{Limits, Searcher};
 
 type Row = ([i32; NUM_FEATURES], f64);
+/// gen이 모으는 한 국면: 특징값 차이, 결과, 둘 차례 쪽 구슬, 상대 구슬
+type PosRow = ([i32; NUM_FEATURES], f64, u128, u128);
 
 fn parse_spec(spec: &str) -> (Limits, Weights) {
     let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
@@ -47,11 +50,11 @@ fn parse_spec(spec: &str) -> (Limits, Weights) {
     (lim, weights_by_name(w).expect("weights"))
 }
 
-fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64) {
+fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64, with_board: bool) {
     let (lim, w) = parse_spec(spec);
     let layouts = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy];
     let next = Arc::new(AtomicUsize::new(0));
-    let rows = Arc::new(Mutex::new(Vec::<Row>::new()));
+    let rows = Arc::new(Mutex::new(Vec::<PosRow>::new()));
     let outcomes = Arc::new(Mutex::new(
         std::collections::BTreeMap::<String, usize>::new(),
     ));
@@ -80,13 +83,19 @@ fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64) {
                         g.play_unchecked(ms[rng.below(ms.len())]);
                     }
                     s.clear();
-                    let mut local: Vec<([i32; NUM_FEATURES], abalone_engine::Color)> = Vec::new();
+                    let mut local: Vec<([i32; NUM_FEATURES], abalone_engine::Color, u128, u128)> =
+                        Vec::new();
                     let mut buf = Vec::new();
                     while !g.is_over() {
                         buf.clear();
                         gen_push_offs(g.pos.own(), g.pos.opp(), &mut buf);
                         if buf.is_empty() {
-                            local.push((features::diff(&g.pos, g.pos.side), g.pos.side));
+                            local.push((
+                                features::diff(&g.pos, g.pos.side),
+                                g.pos.side,
+                                g.pos.own(),
+                                g.pos.opp(),
+                            ));
                         }
                         let m = s.search(&g, lim).best.unwrap();
                         g.play_unchecked(m);
@@ -98,13 +107,13 @@ fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64) {
                     };
                     *outcomes.lock().unwrap().entry(tag).or_insert(0) += 1;
                     let mut r = rows.lock().unwrap();
-                    for (d, side) in local {
+                    for (d, side, own, opp) in local {
                         let y = match g.outcome() {
                             Outcome::Win(c, _) if c == side => 1.0,
                             Outcome::Win(..) => 0.0,
                             _ => 0.5,
                         };
-                        r.push((d, y));
+                        r.push((d, y, own, opp));
                     }
                 }
             })
@@ -115,9 +124,14 @@ fn gen(games: usize, spec: &str, open_plies: usize, out: &str, seed: u64) {
     }
     let rows = rows.lock().unwrap();
     let mut f = std::io::BufWriter::new(std::fs::File::create(out).expect("create"));
-    for (d, y) in rows.iter() {
+    for (d, y, own, opp) in rows.iter() {
         let v: Vec<String> = d.iter().map(|x| x.to_string()).collect();
-        writeln!(f, "{},{}", v.join(","), y).unwrap();
+        if with_board {
+            // 신경망 학습용: 특징값 차이, 둘 차례 쪽 구슬·상대 구슬(패딩 칸 번호 비트, 16진), 결과
+            writeln!(f, "{},{own:x},{opp:x},{}", v.join(","), y).unwrap();
+        } else {
+            writeln!(f, "{},{}", v.join(","), y).unwrap();
+        }
     }
     eprintln!(
         "{games} games, {} quiet positions -> {out}; outcomes {:?}",
@@ -399,6 +413,7 @@ fn main() {
             args[4].parse().unwrap(),
             &args[5],
             args.get(6).and_then(|s| s.parse().ok()).unwrap_or(1),
+            args.get(7).is_some_and(|s| s == "board"),
         ),
         Some("fit") => {
             let (paths, compare): (Vec<String>, String) = match args.last() {

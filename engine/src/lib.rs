@@ -9,6 +9,8 @@ pub mod features;
 pub mod game;
 pub mod json;
 pub mod layouts;
+pub mod nn;
+pub mod nn_weights;
 pub mod notation;
 pub mod record;
 pub mod rng;

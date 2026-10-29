@@ -111,6 +111,12 @@ pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
     s
 }
 
+/// 보정 신경망을 더한 평가값(둘 차례 관점) = 선형 가중합 + `nn::residual`.
+pub fn evaluate_nn(pos: &Position, w: &Weights) -> i32 {
+    let d = features::diff_opts(pos, pos.side, w.0[features::MOBILITY] != 0);
+    score(&d, w) + crate::nn::residual(pos, &d)
+}
+
 /// c 관점 평가값.
 pub fn evaluate_for(pos: &Position, c: Color, w: &Weights) -> i32 {
     score(&features::diff(pos, c), w)

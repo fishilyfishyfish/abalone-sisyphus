@@ -3,7 +3,7 @@
 //!
 //! 실행: cargo run --release --example strength -- <A> <B> [오프닝 쌍 수=20] [무작위 시작 수=4]
 //! 설정: random | easy | easy<점수 폭> (예 easy600) | d<깊이> (예 d3) | t<ms> (예 t1500, 깊이 제한 없음)
-//! d·t 뒤에 p를 붙이면 가지치기(널 무브, LMR)를 쓴다: t500p, d6p
+//! d·t 뒤에 p를 붙이면 가지치기(널 무브, LMR)를 쓴다: t500p, d6p. 그 뒤에 n을 붙이면 보정 신경망: t500pn
 //! 뒤에 @가중치를 붙이면 그 가중치로 둔다: d3@v0, t500@w:1000,-20,10,-15,-75,75,-30
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,9 +26,14 @@ enum Player {
     Time(f64, bool),
 }
 
-fn parse_spec(spec: &str) -> (Player, Weights) {
+/// (설정, 가중치, 보정 신경망 사용). 설정 끝의 n은 보정 신경망(예: t1500pn).
+fn parse_spec(spec: &str) -> (Player, Weights, bool) {
     let (p, w) = spec.split_once('@').unwrap_or((spec, "default"));
-    (parse(p), weights_by_name(w).expect("unknown weights"))
+    let (p, nn) = match p.strip_suffix('n') {
+        Some(q) => (q, true),
+        None => (p, false),
+    };
+    (parse(p), weights_by_name(w).expect("unknown weights"), nn)
 }
 
 fn parse(s: &str) -> Player {
@@ -118,8 +123,8 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let a_spec = args.get(1).map_or("d3", |s| s).to_string();
     let b_spec = args.get(2).map_or("d2", |s| s).to_string();
-    let (a, wa_) = parse_spec(&a_spec);
-    let (b, wb_) = parse_spec(&b_spec);
+    let (a, wa_, na) = parse_spec(&a_spec);
+    let (b, wb_, nb) = parse_spec(&b_spec);
     let pairs: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
     let open_plies: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(4);
     let layouts = [Layout::BelgianDaisy, Layout::Standard, Layout::GermanDaisy];
@@ -139,6 +144,8 @@ fn main() {
             std::thread::spawn(move || {
                 let mut sa = Searcher::with_std_clock(20, wa_);
                 let mut sb = Searcher::with_std_clock(20, wb_);
+                sa.nn = na;
+                sb.nn = nb;
                 let mut rng = Rng::new(1000 + t);
                 loop {
                     let job = next.fetch_add(1, Ordering::SeqCst);

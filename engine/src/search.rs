@@ -127,6 +127,8 @@ fn from_tt(score: i32, ply: usize) -> i32 {
 pub struct Searcher {
     /// 바꾸면 `clear()`로 평가 캐시를 비워야 한다.
     pub weights: Weights,
+    /// 평가에 보정 신경망을 더한다(`eval::evaluate_nn`). 바꾸면 `clear()`로 평가 캐시를 비워야 한다.
+    pub nn: bool,
     tt: Vec<Entry>,
     killers: [[u16; 2]; MAX_PLY],
     history: Vec<i32>,
@@ -161,6 +163,7 @@ impl Searcher {
     pub fn new(tt_bits: u32, weights: Weights, clock: Box<dyn Fn() -> f64>) -> Searcher {
         Searcher {
             weights,
+            nn: false,
             tt: vec![Entry::default(); 1 << tt_bits],
             killers: [[0; 2]; MAX_PLY],
             history: vec![0; 121 * 6 * 3],
@@ -202,7 +205,11 @@ impl Searcher {
         if slot.0 == key {
             return slot.1;
         }
-        let v = eval::evaluate(pos, &self.weights);
+        let v = if self.nn {
+            eval::evaluate_nn(pos, &self.weights)
+        } else {
+            eval::evaluate(pos, &self.weights)
+        };
         *slot = (key, v);
         v
     }
